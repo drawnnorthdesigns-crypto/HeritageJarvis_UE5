@@ -209,7 +209,7 @@ void UHJHUDWidget::BuildProgrammaticLayout()
 
     // --- Esc hint text ---
     EscHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("EscHintText"));
-    EscHintText->SetText(FText::FromString(TEXT("ESC: Menu | I: Inventory | F3: Debug")));
+    EscHintText->SetText(FText::FromString(TEXT("ESC: Menu | I: Inventory | G: Gov | F3: Debug")));
     EscHintText->SetColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)));
     {
         FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 10);
@@ -372,6 +372,140 @@ void UHJHUDWidget::BuildProgrammaticLayout()
         Sp->SetSize(FVector2D(12, 0));
         HBox2->AddChild(Sp);
     }
+
+    // =====================================================================
+    // Faction bar (Phase 4) — third bar at y=68
+    // =====================================================================
+
+    UBorder* BarBg3 = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), FName("FactionBarBg"));
+    BarBg3->SetBrushColor(FLinearColor(0.03f, 0.03f, 0.06f, 0.65f));
+
+    UCanvasPanelSlot* Bar3Slot = Root->AddChildToCanvas(BarBg3);
+    if (Bar3Slot)
+    {
+        Bar3Slot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 0.0f));
+        Bar3Slot->SetOffsets(FMargin(0.0f, 68.0f, 0.0f, 22.0f));
+        Bar3Slot->SetAlignment(FVector2D(0.0f, 0.0f));
+    }
+
+    UHorizontalBox* HBox3 = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), FName("FactionHBox"));
+    BarBg3->AddChild(HBox3);
+
+    // Faction colors: ARGENTUM=silver, AUREATE=gold, FERRUM=iron gray, OBSIDIAN=purple
+    struct FFactionDef { FString Tag; FLinearColor Color; };
+    FFactionDef FactionDefs[] = {
+        { TEXT("ARG"), FLinearColor(0.75f, 0.75f, 0.80f) },
+        { TEXT("AUR"), FLinearColor(1.0f, 0.84f, 0.0f)   },
+        { TEXT("FER"), FLinearColor(0.6f, 0.6f, 0.65f)    },
+        { TEXT("OBS"), FLinearColor(0.6f, 0.3f, 0.8f)     }
+    };
+
+    FactionLabels.SetNum(4);
+    FactionBars.SetNum(4);
+    FactionValues.SetNum(4);
+
+    // Left spacer
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpFacLeft"));
+        Sp->SetSize(FVector2D(12, 0));
+        HBox3->AddChild(Sp);
+    }
+
+    for (int32 I = 0; I < 4; I++)
+    {
+        if (I > 0)
+        {
+            USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(
+                USpacer::StaticClass(), *FString::Printf(TEXT("SpFac_%d"), I));
+            Sp->SetSize(FVector2D(16, 0));
+            HBox3->AddChild(Sp);
+        }
+
+        // Faction tag label
+        FactionLabels[I] = WidgetTree->ConstructWidget<UTextBlock>(
+            UTextBlock::StaticClass(), *FString::Printf(TEXT("FacLabel_%d"), I));
+        FactionLabels[I]->SetText(FText::FromString(FactionDefs[I].Tag));
+        FactionLabels[I]->SetColorAndOpacity(FSlateColor(FactionDefs[I].Color));
+        {
+            FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Bold", 9);
+            FactionLabels[I]->SetFont(Font);
+        }
+        HBox3->AddChild(FactionLabels[I]);
+        if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(FactionLabels[I]->Slot))
+            Slot->SetVerticalAlignment(VAlign_Center);
+
+        // Spacer 4px
+        {
+            USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(
+                USpacer::StaticClass(), *FString::Printf(TEXT("SpFacBar_%d"), I));
+            Sp->SetSize(FVector2D(4, 0));
+            HBox3->AddChild(Sp);
+        }
+
+        // Mini progress bar (50 x 8)
+        USizeBox* BarBox = WidgetTree->ConstructWidget<USizeBox>(
+            USizeBox::StaticClass(), *FString::Printf(TEXT("FacBarBox_%d"), I));
+        BarBox->SetWidthOverride(50);
+        BarBox->SetHeightOverride(8);
+        HBox3->AddChild(BarBox);
+        if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(BarBox->Slot))
+            Slot->SetVerticalAlignment(VAlign_Center);
+
+        FactionBars[I] = WidgetTree->ConstructWidget<UProgressBar>(
+            UProgressBar::StaticClass(), *FString::Printf(TEXT("FacBar_%d"), I));
+        FactionBars[I]->SetPercent(0.0f);
+        FactionBars[I]->SetFillColorAndOpacity(FactionDefs[I].Color);
+        BarBox->AddChild(FactionBars[I]);
+
+        // Spacer 4px
+        {
+            USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(
+                USpacer::StaticClass(), *FString::Printf(TEXT("SpFacVal_%d"), I));
+            Sp->SetSize(FVector2D(4, 0));
+            HBox3->AddChild(Sp);
+        }
+
+        // Influence value text
+        FactionValues[I] = WidgetTree->ConstructWidget<UTextBlock>(
+            UTextBlock::StaticClass(), *FString::Printf(TEXT("FacVal_%d"), I));
+        FactionValues[I]->SetText(FText::FromString(TEXT("0")));
+        FactionValues[I]->SetColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)));
+        {
+            FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+            FactionValues[I]->SetFont(Font);
+        }
+        HBox3->AddChild(FactionValues[I]);
+        if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(FactionValues[I]->Slot))
+            Slot->SetVerticalAlignment(VAlign_Center);
+    }
+
+    // Fill spacer
+    {
+        USpacer* SpFill3 = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpFacFill"));
+        SpFill3->SetSize(FVector2D(0, 0));
+        HBox3->AddChild(SpFill3);
+        if (UHorizontalBoxSlot* FillSlot3 = Cast<UHorizontalBoxSlot>(SpFill3->Slot))
+            FillSlot3->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+    }
+
+    // Governance hint (right side)
+    UTextBlock* GovHint = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("GovHint"));
+    GovHint->SetText(FText::FromString(TEXT("G: Governance")));
+    GovHint->SetColorAndOpacity(FSlateColor(FLinearColor(0.4f, 0.4f, 0.5f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+        GovHint->SetFont(Font);
+    }
+    HBox3->AddChild(GovHint);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(GovHint->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
+    // Right spacer
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpFacRight"));
+        Sp->SetSize(FVector2D(12, 0));
+        HBox3->AddChild(Sp);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -500,6 +634,40 @@ void UHJHUDWidget::OnGameEconomyUpdated_Implementation()
         ResourcesText->SetText(FText::FromString(
             FString::Printf(TEXT("Fe:%d  St:%d  Kn:%d  Cr:%d"),
                 IronCount, StoneCount, KnowledgeCount, CrystalCount)));
+    }
+}
+
+void UHJHUDWidget::SetFactionInfo(const TArray<FTartariaFactionInfo>& InFactions)
+{
+    CachedFactions = InFactions;
+    OnFactionInfoUpdated();
+}
+
+void UHJHUDWidget::OnFactionInfoUpdated_Implementation()
+{
+    // Map faction keys to bar indices: ARGENTUM=0, AUREATE=1, FERRUM=2, OBSIDIAN=3
+    for (const FTartariaFactionInfo& Fac : CachedFactions)
+    {
+        int32 Idx = -1;
+        if      (Fac.FactionKey == TEXT("ARGENTUM")) Idx = 0;
+        else if (Fac.FactionKey == TEXT("AUREATE"))  Idx = 1;
+        else if (Fac.FactionKey == TEXT("FERRUM"))    Idx = 2;
+        else if (Fac.FactionKey == TEXT("OBSIDIAN"))  Idx = 3;
+
+        if (Idx < 0 || Idx >= 4) continue;
+
+        if (FactionBars.IsValidIndex(Idx) && FactionBars[Idx])
+        {
+            // Influence range 0-100
+            float Pct = FMath::Clamp(Fac.Influence / 100.f, 0.f, 1.f);
+            FactionBars[Idx]->SetPercent(Pct);
+        }
+
+        if (FactionValues.IsValidIndex(Idx) && FactionValues[Idx])
+        {
+            FactionValues[Idx]->SetText(FText::FromString(
+                FString::Printf(TEXT("%.0f"), Fac.Influence)));
+        }
     }
 }
 

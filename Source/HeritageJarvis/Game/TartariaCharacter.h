@@ -107,6 +107,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria")
 	void ToggleInventory();
 
+	/** Open governance panel via CEF (bound to G key). */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria")
+	void OpenGovernance();
+
 private:
 	void MoveForward(float Value);
 	void MoveRight(float Value);

@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Game/TartariaTypes.h"
 #include "HJHUDWidget.generated.h"
 
 class UOverlay;
@@ -101,6 +102,9 @@ public:
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
     void SetHealthInfo(float InHealth, float InMaxHealth, const FString& InZone, int32 InDifficulty);
 
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void SetFactionInfo(const TArray<FTartariaFactionInfo>& InFactions);
+
     /** Fix 3.5: Update the offline queue count badge */
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
     void SetQueueCount(int32 Count);
@@ -120,6 +124,9 @@ public:
 
     UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
     void OnHealthInfoUpdated();
+
+    UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
+    void OnFactionInfoUpdated();
 
 private:
     // -------------------------------------------------------
@@ -179,4 +186,16 @@ private:
     float CachedMaxHealth = 100.f;
     FString CachedZoneName;
     int32 CachedDifficulty = 1;
+
+    // Faction bar widgets (Phase 4) — 4 factions
+    UPROPERTY()
+    TArray<UTextBlock*> FactionLabels;
+
+    UPROPERTY()
+    TArray<UProgressBar*> FactionBars;
+
+    UPROPERTY()
+    TArray<UTextBlock*> FactionValues;
+
+    TArray<FTartariaFactionInfo> CachedFactions;
 };

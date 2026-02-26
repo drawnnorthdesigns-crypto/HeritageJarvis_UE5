@@ -367,6 +367,12 @@ void ATartariaGameMode::OnGameStateUpdated()
 		WorldSub->CurrentDay,
 		Iron, Stone, Knowledge, Crystal
 	);
+
+	// Push faction data to HUD
+	if (WorldSub->Factions.Num() > 0)
+	{
+		HUDWidget->SetFactionInfo(WorldSub->Factions);
+	}
 }
 
 void ATartariaGameMode::OnTickCompleted(const TArray<FTartariaTickEvent>& Events)

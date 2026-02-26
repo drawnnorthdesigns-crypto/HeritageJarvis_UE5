@@ -61,6 +61,7 @@ void ATartariaCharacter::SetupPlayerInputComponent(UInputComponent* Input)
 	Input->BindAction("DebugToggle", IE_Pressed, this, &ATartariaCharacter::ToggleDebug);
 	Input->BindAction("DashboardToggle", IE_Pressed, this, &ATartariaCharacter::ToggleDashboard);
 	Input->BindAction("InventoryToggle", IE_Pressed, this, &ATartariaCharacter::ToggleInventory);
+	Input->BindAction("GovernanceToggle", IE_Pressed, this, &ATartariaCharacter::OpenGovernance);
 }
 
 void ATartariaCharacter::Tick(float DeltaTime)
@@ -195,6 +196,15 @@ void ATartariaCharacter::ToggleInventory()
 	    Cast<ATartariaGameMode>(UGameplayStatics::GetGameMode(this)))
 	{
 		GM->ToggleInventory();
+	}
+}
+
+void ATartariaCharacter::OpenGovernance()
+{
+	if (ATartariaGameMode* GM =
+	    Cast<ATartariaGameMode>(UGameplayStatics::GetGameMode(this)))
+	{
+		GM->OpenDashboardToRoute(TEXT("/game#governance"));
 	}
 }
 
