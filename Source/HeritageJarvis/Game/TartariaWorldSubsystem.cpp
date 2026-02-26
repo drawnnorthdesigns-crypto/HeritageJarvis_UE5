@@ -74,6 +74,22 @@ void UTartariaWorldSubsystem::Tick(float DeltaTime)
 		SyncTimer = 0.f;
 		SyncWithBackend();
 	}
+
+	// Periodic inventory poll
+	InventoryTimer += DeltaTime;
+	if (InventoryTimer >= InventoryPollSec)
+	{
+		InventoryTimer = 0.f;
+		PollInventory();
+	}
+
+	// Periodic game tick
+	TickTimer += DeltaTime;
+	if (TickTimer >= TickIntervalSec)
+	{
+		TickTimer = 0.f;
+		ExecuteGameTick();
+	}
 }
 
 void UTartariaWorldSubsystem::SyncWithBackend()
@@ -151,6 +167,155 @@ void UTartariaWorldSubsystem::ParseWorldState(const FString& JsonBody)
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("TartariaWorldSubsystem: Synced — Era=%s, Day=%d, POIs=%d"),
-		*CurrentEra, CurrentDay, ActivePOIs.Num());
+	// Parse credits
+	double Cr = 0;
+	if (Root->TryGetNumberField(TEXT("credits"), Cr))
+		Credits = static_cast<int32>(Cr);
+
+	// Parse phase
+	Root->TryGetStringField(TEXT("phase"), Phase);
+
+	// Parse factions
+	const TSharedPtr<FJsonObject>* FactionsObj;
+	if (Root->TryGetObjectField(TEXT("factions"), FactionsObj))
+	{
+		Factions.Empty();
+		for (const auto& Pair : (*FactionsObj)->Values)
+		{
+			const TSharedPtr<FJsonObject>* FObj;
+			if (Pair.Value->TryGetObject(FObj))
+			{
+				FTartariaFactionInfo Info;
+				Info.FactionKey = Pair.Key;
+				double Inf = 0;
+				(*FObj)->TryGetNumberField(TEXT("influence"), Inf);
+				Info.Influence = static_cast<float>(Inf);
+				(*FObj)->TryGetStringField(TEXT("domain"), Info.Domain);
+				Factions.Add(Info);
+			}
+		}
+	}
+
+	OnGameStateUpdated.Broadcast();
+
+	UE_LOG(LogTemp, Log, TEXT("TartariaWorldSubsystem: Synced — Era=%s, Day=%d, POIs=%d, Credits=%d"),
+		*CurrentEra, CurrentDay, ActivePOIs.Num(), Credits);
+}
+
+// -------------------------------------------------------
+// Inventory polling
+// -------------------------------------------------------
+
+void UTartariaWorldSubsystem::PollInventory()
+{
+	UHJGameInstance* GI = UHJGameInstance::Get(GetWorld());
+	if (!GI || !GI->ApiClient) return;
+
+	FOnApiResponse CB;
+	CB.BindUObject(this, &UTartariaWorldSubsystem::OnInventoryResponse);
+	GI->ApiClient->Get(TEXT("/api/game/inventory"), CB);
+}
+
+void UTartariaWorldSubsystem::OnInventoryResponse(bool bSuccess, const FString& Body)
+{
+	if (!bSuccess)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TartariaWorldSubsystem: Inventory poll failed"));
+		return;
+	}
+	ParseInventory(Body);
+}
+
+void UTartariaWorldSubsystem::ParseInventory(const FString& JsonBody)
+{
+	TSharedPtr<FJsonObject> Root;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonBody);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid()) return;
+
+	const TArray<TSharedPtr<FJsonValue>>* ItemsArr;
+	if (Root->TryGetArrayField(TEXT("items"), ItemsArr))
+	{
+		Inventory.Empty();
+		for (const TSharedPtr<FJsonValue>& Val : *ItemsArr)
+		{
+			const TSharedPtr<FJsonObject>& Obj = Val->AsObject();
+			if (!Obj.IsValid()) continue;
+
+			FTartariaInventoryItem Item;
+			Obj->TryGetStringField(TEXT("item_id"), Item.ItemId);
+
+			double Qty = 0;
+			Obj->TryGetNumberField(TEXT("quantity"), Qty);
+			Item.Quantity = static_cast<int32>(Qty);
+
+			Obj->TryGetBoolField(TEXT("equipped"), Item.bEquipped);
+			Inventory.Add(Item);
+		}
+	}
+
+	OnGameStateUpdated.Broadcast();
+}
+
+// -------------------------------------------------------
+// Game tick
+// -------------------------------------------------------
+
+void UTartariaWorldSubsystem::ExecuteGameTick()
+{
+	UHJGameInstance* GI = UHJGameInstance::Get(GetWorld());
+	if (!GI || !GI->ApiClient) return;
+
+	FOnApiResponse CB;
+	CB.BindUObject(this, &UTartariaWorldSubsystem::OnTickResponse);
+	GI->ApiClient->PostGameTick(1.0f, CB);
+}
+
+void UTartariaWorldSubsystem::OnTickResponse(bool bSuccess, const FString& Body)
+{
+	if (!bSuccess)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TartariaWorldSubsystem: Game tick failed"));
+		return;
+	}
+	ParseTickResponse(Body);
+}
+
+void UTartariaWorldSubsystem::ParseTickResponse(const FString& JsonBody)
+{
+	TSharedPtr<FJsonObject> Root;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonBody);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid()) return;
+
+	// Update credits if provided
+	double CreditsEarned = 0;
+	if (Root->TryGetNumberField(TEXT("credits_earned"), CreditsEarned))
+		Credits += static_cast<int32>(CreditsEarned);
+
+	// Parse events
+	TArray<FTartariaTickEvent> Events;
+	const TArray<TSharedPtr<FJsonValue>>* EventsArr;
+	if (Root->TryGetArrayField(TEXT("events"), EventsArr))
+	{
+		for (const TSharedPtr<FJsonValue>& Val : *EventsArr)
+		{
+			const TSharedPtr<FJsonObject>& Obj = Val->AsObject();
+			if (!Obj.IsValid()) continue;
+
+			FTartariaTickEvent Evt;
+			Obj->TryGetStringField(TEXT("type"), Evt.Type);
+			Obj->TryGetStringField(TEXT("detail"), Evt.Detail);
+
+			double V = 0;
+			Obj->TryGetNumberField(TEXT("value"), V);
+			Evt.Value = static_cast<int32>(V);
+
+			Events.Add(Evt);
+		}
+	}
+
+	if (Events.Num() > 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("TartariaWorldSubsystem: Tick produced %d events"), Events.Num());
+		OnTickCompleted.Broadcast(Events);
+	}
 }

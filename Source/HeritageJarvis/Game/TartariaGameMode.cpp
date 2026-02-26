@@ -1,9 +1,11 @@
 #include "TartariaGameMode.h"
 #include "TartariaCharacter.h"
+#include "TartariaWorldSubsystem.h"
 #include "Kismet/GameplayStatics.h"
 #include "Blueprint/UserWidget.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Core/HJGameInstance.h"
+#include "Core/HJApiClient.h"
 #include "UI/HJHUDWidget.h"
 #include "UI/HJPauseWidget.h"
 #include "UI/HJNotificationWidget.h"
@@ -104,6 +106,14 @@ void ATartariaGameMode::BeginPlay()
 	// Populate world with biomes, resources, buildings, NPCs
 	WorldPopulator = NewObject<UTartariaWorldPopulator>(this);
 	WorldPopulator->PopulateWorld(GetWorld());
+
+	// Subscribe to economy/tick delegates from WorldSubsystem
+	UTartariaWorldSubsystem* WorldSub = GetWorld()->GetSubsystem<UTartariaWorldSubsystem>();
+	if (WorldSub)
+	{
+		WorldSub->OnGameStateUpdated.AddDynamic(this, &ATartariaGameMode::OnGameStateUpdated);
+		WorldSub->OnTickCompleted.AddDynamic(this, &ATartariaGameMode::OnTickCompleted);
+	}
 
 	// Set game input mode (lock mouse to game)
 	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
@@ -250,4 +260,99 @@ void ATartariaGameMode::OnHealthStatusUpdate(bool bOnline, const FString& Messag
 void ATartariaGameMode::OnQueueCountChanged(int32 Count)
 {
 	if (HUDWidget) HUDWidget->SetQueueCount(Count);
+}
+
+// -------------------------------------------------------
+// Phase 1: Economy / tick delegate handlers
+// -------------------------------------------------------
+
+void ATartariaGameMode::OnGameStateUpdated()
+{
+	if (!HUDWidget) return;
+
+	UTartariaWorldSubsystem* WorldSub = GetWorld()->GetSubsystem<UTartariaWorldSubsystem>();
+	if (!WorldSub) return;
+
+	// Extract resource counts from inventory
+	int32 Iron = 0, Stone = 0, Knowledge = 0, Crystal = 0;
+	for (const FTartariaInventoryItem& Item : WorldSub->Inventory)
+	{
+		if (Item.ItemId == TEXT("iron"))           Iron += Item.Quantity;
+		else if (Item.ItemId == TEXT("stone"))     Stone += Item.Quantity;
+		else if (Item.ItemId == TEXT("knowledge")) Knowledge += Item.Quantity;
+		else if (Item.ItemId == TEXT("crystal"))   Crystal += Item.Quantity;
+	}
+
+	HUDWidget->SetGameEconomy(
+		WorldSub->Credits,
+		WorldSub->CurrentEra,
+		WorldSub->CurrentDay,
+		Iron, Stone, Knowledge, Crystal
+	);
+}
+
+void ATartariaGameMode::OnTickCompleted(const TArray<FTartariaTickEvent>& Events)
+{
+	for (const FTartariaTickEvent& Evt : Events)
+	{
+		FString Msg;
+		EHJNotifType NotifType = EHJNotifType::Info;
+
+		if (Evt.Type == TEXT("RAID_VICTORY"))
+		{
+			Msg = FString::Printf(TEXT("Raid repelled! +%d credits"), Evt.Value);
+			NotifType = EHJNotifType::Success;
+		}
+		else if (Evt.Type == TEXT("RAID_DEFEAT"))
+		{
+			Msg = FString::Printf(TEXT("Raid lost territory: %s"), *Evt.Detail);
+			NotifType = EHJNotifType::Error;
+		}
+		else if (Evt.Type == TEXT("BOOK_COMPLETED"))
+		{
+			Msg = FString::Printf(TEXT("Manuscript completed (+%d cr)"), Evt.Value);
+			NotifType = EHJNotifType::Info;
+		}
+		else if (Evt.Type == TEXT("ANNEXATION"))
+		{
+			Msg = FString::Printf(TEXT("Territory annexed: %s"), *Evt.Detail);
+			NotifType = EHJNotifType::Warning;
+		}
+		else if (Evt.Type == TEXT("HABITABLE"))
+		{
+			Msg = FString::Printf(TEXT("Planet now habitable: %s"), *Evt.Detail);
+			NotifType = EHJNotifType::Success;
+		}
+		else
+		{
+			Msg = FString::Printf(TEXT("[%s] %s"), *Evt.Type, *Evt.Detail);
+		}
+
+		UHJNotificationWidget::Toast(Msg, NotifType, 4.0f);
+	}
+}
+
+void ATartariaGameMode::OpenDashboardToRoute(const FString& Route)
+{
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (!PC) return;
+
+	// Ensure dashboard widget exists
+	if (!DashOverlayWidget)
+	{
+		DashOverlayWidget = CreateWidget<UHJDashboardWidget>(PC);
+		if (DashOverlayWidget)
+			DashOverlayWidget->AddToViewport(15);
+	}
+
+	if (!DashOverlayWidget) return;
+
+	// Navigate to the building-specific route
+	FString Url = FString::Printf(TEXT("http://127.0.0.1:5000%s?embedded=1"), *Route);
+	DashOverlayWidget->NavigateTo(Url);
+	DashOverlayWidget->SetVisibility(ESlateVisibility::Visible);
+
+	bDashboardOpen = true;
+	PC->SetShowMouseCursor(true);
+	PC->SetInputMode(FInputModeGameAndUI());
 }

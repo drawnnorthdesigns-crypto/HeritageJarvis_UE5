@@ -228,6 +228,90 @@ void UHJHUDWidget::BuildProgrammaticLayout()
         Sp->SetSize(FVector2D(12, 0));
         HBox->AddChild(Sp);
     }
+
+    // =====================================================================
+    // Economy bar (Phase 1) — second bar at y=40
+    // =====================================================================
+
+    UBorder* BarBg2 = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), FName("EconBarBg"));
+    BarBg2->SetBrushColor(FLinearColor(0.04f, 0.04f, 0.07f, 0.75f));
+
+    UCanvasPanelSlot* Bar2Slot = Root->AddChildToCanvas(BarBg2);
+    if (Bar2Slot)
+    {
+        Bar2Slot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 0.0f));
+        Bar2Slot->SetOffsets(FMargin(0.0f, 40.0f, 0.0f, 28.0f));
+        Bar2Slot->SetAlignment(FVector2D(0.0f, 0.0f));
+    }
+
+    UHorizontalBox* HBox2 = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), FName("EconHBox"));
+    BarBg2->AddChild(HBox2);
+
+    // --- Left spacer 12px ---
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpEconLeft"));
+        Sp->SetSize(FVector2D(12, 0));
+        HBox2->AddChild(Sp);
+    }
+
+    // --- Credits text (gold, bold 12) ---
+    CreditsText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("CreditsText"));
+    CreditsText->SetText(FText::FromString(TEXT("0 cr")));
+    CreditsText->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.84f, 0.0f)));  // gold
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Bold", 12);
+        CreditsText->SetFont(Font);
+    }
+    HBox2->AddChild(CreditsText);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(CreditsText->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
+    // --- Spacer 20px ---
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpEconCredits"));
+        Sp->SetSize(FVector2D(20, 0));
+        HBox2->AddChild(Sp);
+    }
+
+    // --- Era text (cyan, regular 11) ---
+    EraText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("EraText"));
+    EraText->SetText(FText::FromString(TEXT("FOUNDATION -- Day 1")));
+    EraText->SetColorAndOpacity(FSlateColor(FLinearColor(0.2f, 0.85f, 0.9f)));  // cyan
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 11);
+        EraText->SetFont(Font);
+    }
+    HBox2->AddChild(EraText);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(EraText->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
+    // --- Spacer 20px ---
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpEconEra"));
+        Sp->SetSize(FVector2D(20, 0));
+        HBox2->AddChild(Sp);
+    }
+
+    // --- Resources text (white, regular 10) ---
+    ResourcesText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("ResourcesText"));
+    ResourcesText->SetText(FText::FromString(TEXT("Fe:0 St:0 Kn:0 Cr:0")));
+    ResourcesText->SetColorAndOpacity(FSlateColor(FLinearColor(0.8f, 0.8f, 0.8f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 10);
+        ResourcesText->SetFont(Font);
+    }
+    HBox2->AddChild(ResourcesText);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(ResourcesText->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
+    // --- Fill spacer ---
+    {
+        USpacer* SpFill2 = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpEconFill"));
+        SpFill2->SetSize(FVector2D(0, 0));
+        HBox2->AddChild(SpFill2);
+        if (UHorizontalBoxSlot* FillSlot2 = Cast<UHorizontalBoxSlot>(SpFill2->Slot))
+            FillSlot2->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -322,5 +406,39 @@ void UHJHUDWidget::SetQueueCount(int32 Count)
     else
     {
         QueueBadge->SetVisibility(ESlateVisibility::Collapsed);
+    }
+}
+
+void UHJHUDWidget::SetGameEconomy(int32 InCredits, const FString& InEra, int32 InDay,
+                                   int32 InIron, int32 InStone, int32 InKnowledge, int32 InCrystal)
+{
+    Credits = InCredits;
+    EraDisplay = FString::Printf(TEXT("%s -- Day %d"), *InEra, InDay);
+    IronCount = InIron;
+    StoneCount = InStone;
+    KnowledgeCount = InKnowledge;
+    CrystalCount = InCrystal;
+    OnGameEconomyUpdated();
+}
+
+void UHJHUDWidget::OnGameEconomyUpdated_Implementation()
+{
+    if (CreditsText)
+    {
+        // Format credits with comma separators
+        FString CrStr = FString::FormatAsNumber(Credits);
+        CreditsText->SetText(FText::FromString(FString::Printf(TEXT("%s cr"), *CrStr)));
+    }
+
+    if (EraText)
+    {
+        EraText->SetText(FText::FromString(EraDisplay));
+    }
+
+    if (ResourcesText)
+    {
+        ResourcesText->SetText(FText::FromString(
+            FString::Printf(TEXT("Fe:%d  St:%d  Kn:%d  Cr:%d"),
+                IronCount, StoneCount, KnowledgeCount, CrystalCount)));
     }
 }

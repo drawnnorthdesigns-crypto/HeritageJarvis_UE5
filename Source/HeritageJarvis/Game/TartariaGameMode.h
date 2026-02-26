@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "TartariaTypes.h"
 #include "TartariaGameMode.generated.h"
 
 class UHJHUDWidget;
@@ -82,6 +83,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria")
 	void ToggleDashboardOverlay();
 
+	/** Open the CEF dashboard and navigate to a specific route. */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria")
+	void OpenDashboardToRoute(const FString& Route);
+
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria")
 	bool bPauseMenuOpen = false;
 
@@ -108,4 +113,11 @@ private:
 	/** Fix 3.5: Receives queue count changes from GameInstance. */
 	UFUNCTION()
 	void OnQueueCountChanged(int32 Count);
+
+	// Phase 1: Economy delegate receivers
+	UFUNCTION()
+	void OnGameStateUpdated();
+
+	UFUNCTION()
+	void OnTickCompleted(const TArray<FTartariaTickEvent>& Events);
 };

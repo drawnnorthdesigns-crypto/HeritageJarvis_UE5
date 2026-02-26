@@ -1,19 +1,29 @@
 #include "TartariaResourceNode.h"
 #include "Core/HJGameInstance.h"
 #include "Core/HJApiClient.h"
+#include "UI/HJNotificationWidget.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Dom/JsonObject.h"
+#include "Serialization/JsonReader.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
+#include "Async/Async.h"
 
 ATartariaResourceNode::ATartariaResourceNode()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
-	// Resource mesh (assign specific mesh in editor/BP)
+	// Resource mesh — sphere primitive for visibility
 	ResourceMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ResourceMesh"));
 	RootComponent = ResourceMesh;
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> MeshFinder(
+		TEXT("/Engine/BasicShapes/Sphere"));
+	if (MeshFinder.Succeeded())
+		ResourceMesh->SetStaticMesh(MeshFinder.Object);
+	ResourceMesh->SetWorldScale3D(FVector(0.75f));
 
 	// Glow light to make resources visible
 	GlowLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("GlowLight"));
@@ -115,6 +125,23 @@ void ATartariaResourceNode::SendHarvestRequest(APlayerController* Interactor)
 		if (bOk)
 		{
 			UE_LOG(LogTemp, Log, TEXT("TartariaResourceNode: Harvest recorded on backend"));
+
+			// Parse credits earned from response
+			TSharedPtr<FJsonObject> Json;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Resp);
+			if (FJsonSerializer::Deserialize(Reader, Json) && Json.IsValid())
+			{
+				double Earned = 0;
+				Json->TryGetNumberField(TEXT("credits_earned"), Earned);
+				if (Earned > 0)
+				{
+					FString Msg = FString::Printf(TEXT("+%.0f credits"), Earned);
+					AsyncTask(ENamedThreads::GameThread, [Msg]()
+					{
+						UHJNotificationWidget::Toast(Msg, EHJNotifType::Success, 2.0f);
+					});
+				}
+			}
 		}
 		else
 		{

@@ -77,3 +77,51 @@ enum class ETartariaBuildingType : uint8
 	Barracks     UMETA(DisplayName = "Barracks"),
 	Lab          UMETA(DisplayName = "Laboratory")
 };
+
+/** Faction reputation info — parsed from world_state. */
+USTRUCT(BlueprintType)
+struct FTartariaFactionInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
+	FString FactionKey;   // ARGENTUM, AUREATE, FERRUM, OBSIDIAN
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
+	float Influence = 0.f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
+	FString Domain;
+};
+
+/** Single inventory item — parsed from /api/game/inventory. */
+USTRUCT(BlueprintType)
+struct FTartariaInventoryItem
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
+	FString ItemId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
+	int32 Quantity = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
+	bool bEquipped = false;
+};
+
+/** Event emitted by a game tick — raids, completions, annexations, etc. */
+USTRUCT(BlueprintType)
+struct FTartariaTickEvent
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
+	FString Type;    // RAID_VICTORY, BOOK_COMPLETED, ANNEXATION, HABITABLE, etc.
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
+	FString Detail;  // Human-readable detail string
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
+	int32 Value = 0;
+};

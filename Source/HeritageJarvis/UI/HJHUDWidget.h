@@ -59,6 +59,28 @@ public:
     bool bFlaskOnline = false;
 
     // -------------------------------------------------------
+    // Economy state (Phase 1)
+    // -------------------------------------------------------
+
+    UPROPERTY(BlueprintReadOnly, Category = "HJ|HUD")
+    int32 Credits = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "HJ|HUD")
+    FString EraDisplay;  // "FOUNDATION -- Day 7"
+
+    UPROPERTY(BlueprintReadOnly, Category = "HJ|HUD")
+    int32 IronCount = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "HJ|HUD")
+    int32 StoneCount = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "HJ|HUD")
+    int32 KnowledgeCount = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "HJ|HUD")
+    int32 CrystalCount = 0;
+
+    // -------------------------------------------------------
     // Push updates from TartariaGameMode / EventPoller
     // -------------------------------------------------------
 
@@ -71,6 +93,10 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
     void SetFlaskStatus(bool bOnline);
+
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void SetGameEconomy(int32 InCredits, const FString& InEra, int32 InDay,
+                        int32 InIron, int32 InStone, int32 InKnowledge, int32 InCrystal);
 
     /** Fix 3.5: Update the offline queue count badge */
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
@@ -85,6 +111,9 @@ public:
 
     UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
     void OnFlaskStatusUpdated();
+
+    UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
+    void OnGameEconomyUpdated();
 
 private:
     // -------------------------------------------------------
@@ -118,4 +147,14 @@ private:
     /** Fix 3.5: Queue count badge (visible when > 0) */
     UPROPERTY()
     UTextBlock* QueueBadge = nullptr;
+
+    // Economy bar widgets (Phase 1)
+    UPROPERTY()
+    UTextBlock* CreditsText = nullptr;
+
+    UPROPERTY()
+    UTextBlock* EraText = nullptr;
+
+    UPROPERTY()
+    UTextBlock* ResourcesText = nullptr;
 };
