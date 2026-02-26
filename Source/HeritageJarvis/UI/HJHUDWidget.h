@@ -98,6 +98,9 @@ public:
     void SetGameEconomy(int32 InCredits, const FString& InEra, int32 InDay,
                         int32 InIron, int32 InStone, int32 InKnowledge, int32 InCrystal);
 
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void SetHealthInfo(float InHealth, float InMaxHealth, const FString& InZone, int32 InDifficulty);
+
     /** Fix 3.5: Update the offline queue count badge */
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
     void SetQueueCount(int32 Count);
@@ -114,6 +117,9 @@ public:
 
     UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
     void OnGameEconomyUpdated();
+
+    UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
+    void OnHealthInfoUpdated();
 
 private:
     // -------------------------------------------------------
@@ -157,4 +163,20 @@ private:
 
     UPROPERTY()
     UTextBlock* ResourcesText = nullptr;
+
+    // Health bar widgets (Phase 2)
+    UPROPERTY()
+    UProgressBar* HealthBar = nullptr;
+
+    UPROPERTY()
+    UTextBlock* HealthText = nullptr;
+
+    UPROPERTY()
+    UTextBlock* ZoneText = nullptr;
+
+    // Cached health state
+    float CachedHealth = 100.f;
+    float CachedMaxHealth = 100.f;
+    FString CachedZoneName;
+    int32 CachedDifficulty = 1;
 };

@@ -54,6 +54,42 @@ public:
 	float InteractReach = 250.0f;
 
 	// -------------------------------------------------------
+	// Health / Combat (Phase 2)
+	// -------------------------------------------------------
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Combat")
+	float MaxHealth = 100.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stats|Combat")
+	float CurrentHealth = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Combat")
+	int32 Defense = 20;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Stats|Combat")
+	bool bIsDead = false;
+
+	/** Current biome the player is in. */
+	UPROPERTY(BlueprintReadOnly, Category = "Stats|Combat")
+	FString CurrentBiome = TEXT("CLEARINGHOUSE");
+
+	UFUNCTION(BlueprintCallable, Category = "Stats|Combat")
+	void ApplyDamage(float DamageAmount);
+
+	UFUNCTION(BlueprintCallable, Category = "Stats|Combat")
+	void Heal(float HealAmount);
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnHealthChanged, float, NewHealth, float, MaxHealthVal);
+
+	UPROPERTY(BlueprintAssignable, Category = "Stats|Combat")
+	FOnHealthChanged OnHealthChanged;
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnPlayerDeath);
+
+	UPROPERTY(BlueprintAssignable, Category = "Stats|Combat")
+	FOnPlayerDeath OnPlayerDeath;
+
+	// -------------------------------------------------------
 	// Blueprint events
 	// -------------------------------------------------------
 

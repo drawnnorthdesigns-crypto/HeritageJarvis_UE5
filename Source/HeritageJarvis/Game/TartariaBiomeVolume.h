@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "TartariaTypes.h"
 #include "TartariaBiomeVolume.generated.h"
 
 class USphereComponent;
@@ -10,6 +11,7 @@ class UPostProcessComponent;
 /**
  * ATartariaBiomeVolume — Placed in level to define biome zone boundaries.
  * Each biome has unique post-processing atmosphere and collision detection.
+ * On zone entry, calls /api/game/threat/check to determine if an encounter triggers.
  */
 UCLASS()
 class HERITAGEJARVIS_API ATartariaBiomeVolume : public AActor
@@ -37,6 +39,24 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|Biome")
 	UPostProcessComponent* BiomePostProcess;
 
+	// -------------------------------------------------------
+	// Threat detection (Phase 2)
+	// -------------------------------------------------------
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnThreatDetected,
+		const FTartariaThreatInfo&, Threat, ATartariaBiomeVolume*, Volume);
+
+	/** Fires when a threat is detected on zone entry. */
+	UPROPERTY(BlueprintAssignable, Category = "Tartaria|Combat")
+	FOnThreatDetected OnThreatDetected;
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnZoneChanged,
+		const FString&, NewBiome, int32, NewDifficulty);
+
+	/** Fires when player enters this zone (always, regardless of threat). */
+	UPROPERTY(BlueprintAssignable, Category = "Tartaria|Biome")
+	FOnZoneChanged OnZoneEntered;
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -50,4 +70,11 @@ protected:
 	void OnZoneEndOverlap(UPrimitiveComponent* OverlappedComponent,
 	                       AActor* OtherActor, UPrimitiveComponent* OtherComp,
 	                       int32 OtherBodyIndex);
+
+private:
+	void OnThreatCheckResponse(bool bSuccess, const FString& Body);
+
+	/** Cooldown to prevent rapid re-triggering. */
+	float LastThreatCheckTime = -999.f;
+	static constexpr float ThreatCheckCooldownSec = 10.f;
 };

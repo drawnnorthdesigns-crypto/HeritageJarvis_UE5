@@ -1,9 +1,11 @@
 #include "TartariaGameMode.h"
 #include "TartariaCharacter.h"
 #include "TartariaWorldSubsystem.h"
+#include "TartariaBiomeVolume.h"
 #include "Kismet/GameplayStatics.h"
 #include "Blueprint/UserWidget.h"
 #include "UObject/ConstructorHelpers.h"
+#include "EngineUtils.h"
 #include "Core/HJGameInstance.h"
 #include "Core/HJApiClient.h"
 #include "UI/HJHUDWidget.h"
@@ -12,6 +14,7 @@
 #include "UI/HJDebugWidget.h"
 #include "UI/HJLoadingWidget.h"
 #include "UI/HJDashboardWidget.h"
+#include "UI/HJThreatWidget.h"
 #include "TartariaWorldPopulator.h"
 
 ATartariaGameMode::ATartariaGameMode()
@@ -34,6 +37,10 @@ ATartariaGameMode::ATartariaGameMode()
 	static ConstructorHelpers::FClassFinder<UHJDebugWidget> DebugFinder(
 		TEXT("/Game/UI/WBP_Debug"));
 	if (DebugFinder.Succeeded()) DebugWidgetClass = DebugFinder.Class;
+
+	static ConstructorHelpers::FClassFinder<UHJThreatWidget> ThreatFinder(
+		TEXT("/Game/UI/WBP_Threat"));
+	if (ThreatFinder.Succeeded()) ThreatWidgetClass = ThreatFinder.Class;
 }
 
 void ATartariaGameMode::BeginPlay()
@@ -113,6 +120,40 @@ void ATartariaGameMode::BeginPlay()
 	{
 		WorldSub->OnGameStateUpdated.AddDynamic(this, &ATartariaGameMode::OnGameStateUpdated);
 		WorldSub->OnTickCompleted.AddDynamic(this, &ATartariaGameMode::OnTickCompleted);
+	}
+
+	// Spawn threat encounter widget (hidden, above HUD)
+	if (ThreatWidgetClass)
+	{
+		ThreatWidget = CreateWidget<UHJThreatWidget>(
+			UGameplayStatics::GetPlayerController(this, 0), ThreatWidgetClass);
+		if (ThreatWidget)
+		{
+			ThreatWidget->AddToViewport(25);
+			ThreatWidget->OnEncounterResolved.AddDynamic(
+				this, &ATartariaGameMode::OnEncounterResolved);
+		}
+	}
+
+	// Subscribe to all BiomeVolume threat/zone delegates
+	SubscribeToBiomeVolumes();
+
+	// Subscribe to player health changes
+	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
+	if (ATartariaCharacter* PlayerChar = Cast<ATartariaCharacter>(PlayerPawn))
+	{
+		PlayerChar->OnHealthChanged.AddDynamic(this, &ATartariaGameMode::OnPlayerHealthChanged);
+		PlayerChar->OnPlayerDeath.AddDynamic(this, &ATartariaGameMode::OnPlayerDeath);
+
+		// Seed HUD with initial health
+		if (HUDWidget)
+		{
+			HUDWidget->SetHealthInfo(
+				PlayerChar->CurrentHealth,
+				PlayerChar->MaxHealth,
+				PlayerChar->CurrentBiome,
+				1);
+		}
 	}
 
 	// Set game input mode (lock mouse to game)
@@ -355,4 +396,128 @@ void ATartariaGameMode::OpenDashboardToRoute(const FString& Route)
 	bDashboardOpen = true;
 	PC->SetShowMouseCursor(true);
 	PC->SetInputMode(FInputModeGameAndUI());
+}
+
+// -------------------------------------------------------
+// Phase 2: Combat / threat handlers
+// -------------------------------------------------------
+
+void ATartariaGameMode::SubscribeToBiomeVolumes()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	for (TActorIterator<ATartariaBiomeVolume> It(World); It; ++It)
+	{
+		ATartariaBiomeVolume* Volume = *It;
+		Volume->OnThreatDetected.AddDynamic(this, &ATartariaGameMode::OnThreatDetected);
+		Volume->OnZoneEntered.AddDynamic(this, &ATartariaGameMode::OnZoneChanged);
+	}
+}
+
+void ATartariaGameMode::OnThreatDetected(const FTartariaThreatInfo& Threat,
+                                          ATartariaBiomeVolume* Volume)
+{
+	if (ThreatWidget)
+	{
+		ThreatWidget->ShowEncounter(Threat);
+
+		// Switch to GameAndUI so player can click Fight/Evade
+		APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+		if (PC)
+		{
+			PC->SetShowMouseCursor(true);
+			PC->SetInputMode(FInputModeGameAndUI());
+		}
+	}
+
+	UHJNotificationWidget::Toast(
+		FString::Printf(TEXT("Ambush! %s in %s zone"),
+			*Threat.EnemyKey.Replace(TEXT("_"), TEXT(" ")),
+			*Threat.BiomeKey),
+		EHJNotifType::Warning, 3.0f);
+}
+
+void ATartariaGameMode::OnZoneChanged(const FString& NewBiome, int32 NewDifficulty)
+{
+	CurrentZoneDifficulty = NewDifficulty;
+
+	if (HUDWidget)
+	{
+		APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
+		ATartariaCharacter* PlayerChar = Cast<ATartariaCharacter>(PlayerPawn);
+		if (PlayerChar)
+		{
+			HUDWidget->SetHealthInfo(
+				PlayerChar->CurrentHealth,
+				PlayerChar->MaxHealth,
+				NewBiome,
+				NewDifficulty);
+		}
+	}
+
+	// Toast zone entry for non-safe zones
+	if (NewDifficulty > 1)
+	{
+		UHJNotificationWidget::Toast(
+			FString::Printf(TEXT("Entering %s (Danger: %d/5)"), *NewBiome, NewDifficulty),
+			NewDifficulty >= 4 ? EHJNotifType::Error : EHJNotifType::Warning,
+			2.0f);
+	}
+}
+
+void ATartariaGameMode::OnEncounterResolved(const FTartariaEncounterResult& Result)
+{
+	// Apply damage to player
+	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
+	ATartariaCharacter* PlayerChar = Cast<ATartariaCharacter>(PlayerPawn);
+	if (PlayerChar && Result.DamageTaken > 0)
+	{
+		PlayerChar->ApplyDamage(static_cast<float>(Result.DamageTaken));
+	}
+
+	// Return to game-only input
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (PC)
+	{
+		PC->SetShowMouseCursor(false);
+		PC->SetInputMode(FInputModeGameOnly());
+	}
+
+	// Victory toast with credit reward
+	if (Result.bVictory && Result.RewardCredits > 0)
+	{
+		UHJNotificationWidget::Toast(
+			FString::Printf(TEXT("Victory! +%d credits"), Result.RewardCredits),
+			EHJNotifType::Success, 3.0f);
+	}
+}
+
+void ATartariaGameMode::OnPlayerHealthChanged(float NewHealth, float MaxHealthVal)
+{
+	if (HUDWidget)
+	{
+		APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
+		ATartariaCharacter* PlayerChar = Cast<ATartariaCharacter>(PlayerPawn);
+		FString Zone = PlayerChar ? PlayerChar->CurrentBiome : TEXT("UNKNOWN");
+		HUDWidget->SetHealthInfo(NewHealth, MaxHealthVal, Zone, CurrentZoneDifficulty);
+	}
+}
+
+void ATartariaGameMode::OnPlayerDeath()
+{
+	UHJNotificationWidget::Toast(
+		TEXT("You have fallen! Respawning at Clearinghouse..."),
+		EHJNotifType::Error, 5.0f);
+
+	// Respawn: heal to full, teleport to origin (Clearinghouse)
+	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
+	ATartariaCharacter* PlayerChar = Cast<ATartariaCharacter>(PlayerPawn);
+	if (PlayerChar)
+	{
+		PlayerChar->bIsDead = false;
+		PlayerChar->Heal(PlayerChar->MaxHealth);
+		PlayerChar->SetActorLocation(FVector(0.f, 0.f, 200.f));
+		PlayerChar->CurrentBiome = TEXT("CLEARINGHOUSE");
+	}
 }

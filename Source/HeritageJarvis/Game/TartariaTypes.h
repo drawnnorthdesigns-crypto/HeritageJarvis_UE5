@@ -125,3 +125,47 @@ struct FTartariaTickEvent
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Economy")
 	int32 Value = 0;
 };
+
+/** Threat info returned by /api/game/threat/check. */
+USTRUCT(BlueprintType)
+struct FTartariaThreatInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	bool bSafe = true;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	FString EnemyKey;  // THE_DUSTBORN, VOID_PIRATES, etc.
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	int32 EnemyPower = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	int32 EffectivePower = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	FString Message;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	FString BiomeKey;
+};
+
+/** Result of resolving a threat encounter via /api/game/threat/resolve. */
+USTRUCT(BlueprintType)
+struct FTartariaEncounterResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	bool bVictory = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	int32 RewardCredits = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	float FactionRep = 0.f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	int32 DamageTaken = 0;
+};

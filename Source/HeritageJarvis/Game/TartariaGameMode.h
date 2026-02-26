@@ -11,7 +11,9 @@ class UHJNotificationWidget;
 class UHJDebugWidget;
 class UHJLoadingWidget;
 class UHJDashboardWidget;
+class UHJThreatWidget;
 class UTartariaWorldPopulator;
+class ATartariaBiomeVolume;
 
 /**
  * ATartariaGameMode — Game mode for the Tartaria open world.
@@ -50,6 +52,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HJ|UI")
 	TSubclassOf<UHJDebugWidget> DebugWidgetClass;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HJ|UI")
+	TSubclassOf<UHJThreatWidget> ThreatWidgetClass;
+
 	// -------------------------------------------------------
 	// Live widget references
 	// -------------------------------------------------------
@@ -65,6 +70,9 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, Category = "HJ|UI")
 	UHJDebugWidget* DebugWidget;
+
+	UPROPERTY(BlueprintReadOnly, Category = "HJ|UI")
+	UHJThreatWidget* ThreatWidget = nullptr;
 
 	// -------------------------------------------------------
 	// Actions
@@ -100,6 +108,9 @@ public:
 	UPROPERTY()
 	UTartariaWorldPopulator* WorldPopulator = nullptr;
 
+	/** Current zone difficulty (updated on zone change). */
+	int32 CurrentZoneDifficulty = 1;
+
 private:
 
 	// EventPoller delegate receivers
@@ -120,4 +131,22 @@ private:
 
 	UFUNCTION()
 	void OnTickCompleted(const TArray<FTartariaTickEvent>& Events);
+
+	// Phase 2: Combat delegate receivers
+	UFUNCTION()
+	void OnThreatDetected(const FTartariaThreatInfo& Threat, ATartariaBiomeVolume* Volume);
+
+	UFUNCTION()
+	void OnZoneChanged(const FString& NewBiome, int32 NewDifficulty);
+
+	UFUNCTION()
+	void OnEncounterResolved(const FTartariaEncounterResult& Result);
+
+	UFUNCTION()
+	void OnPlayerHealthChanged(float NewHealth, float MaxHealthVal);
+
+	UFUNCTION()
+	void OnPlayerDeath();
+
+	void SubscribeToBiomeVolumes();
 };

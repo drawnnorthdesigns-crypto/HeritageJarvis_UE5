@@ -312,6 +312,66 @@ void UHJHUDWidget::BuildProgrammaticLayout()
         if (UHorizontalBoxSlot* FillSlot2 = Cast<UHorizontalBoxSlot>(SpFill2->Slot))
             FillSlot2->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
     }
+
+    // --- Zone name (right side, regular 10) ---
+    ZoneText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("ZoneText"));
+    ZoneText->SetText(FText::FromString(TEXT("CLEARINGHOUSE")));
+    ZoneText->SetColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.8f, 0.6f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 10);
+        ZoneText->SetFont(Font);
+    }
+    HBox2->AddChild(ZoneText);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(ZoneText->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
+    // --- Spacer 12px ---
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpHealth"));
+        Sp->SetSize(FVector2D(12, 0));
+        HBox2->AddChild(Sp);
+    }
+
+    // --- Health bar (100 x 12, red fill) ---
+    {
+        USizeBox* HpBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), FName("HealthBarBox"));
+        HpBox->SetWidthOverride(100);
+        HpBox->SetHeightOverride(12);
+        HBox2->AddChild(HpBox);
+        if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(HpBox->Slot))
+            Slot->SetVerticalAlignment(VAlign_Center);
+
+        HealthBar = WidgetTree->ConstructWidget<UProgressBar>(UProgressBar::StaticClass(), FName("HealthBar"));
+        HealthBar->SetPercent(1.0f);
+        HealthBar->SetFillColorAndOpacity(FLinearColor(0.8f, 0.15f, 0.15f));
+        HpBox->AddChild(HealthBar);
+    }
+
+    // --- Spacer 6px ---
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpHpText"));
+        Sp->SetSize(FVector2D(6, 0));
+        HBox2->AddChild(Sp);
+    }
+
+    // --- Health text ---
+    HealthText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("HealthText"));
+    HealthText->SetText(FText::FromString(TEXT("100/100")));
+    HealthText->SetColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.3f, 0.3f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Bold", 10);
+        HealthText->SetFont(Font);
+    }
+    HBox2->AddChild(HealthText);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(HealthText->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
+    // --- Right spacer 12px ---
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpEconRight"));
+        Sp->SetSize(FVector2D(12, 0));
+        HBox2->AddChild(Sp);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -440,5 +500,54 @@ void UHJHUDWidget::OnGameEconomyUpdated_Implementation()
         ResourcesText->SetText(FText::FromString(
             FString::Printf(TEXT("Fe:%d  St:%d  Kn:%d  Cr:%d"),
                 IronCount, StoneCount, KnowledgeCount, CrystalCount)));
+    }
+}
+
+void UHJHUDWidget::SetHealthInfo(float InHealth, float InMaxHealth,
+                                  const FString& InZone, int32 InDifficulty)
+{
+    CachedHealth = InHealth;
+    CachedMaxHealth = InMaxHealth;
+    CachedZoneName = InZone;
+    CachedDifficulty = InDifficulty;
+    OnHealthInfoUpdated();
+}
+
+void UHJHUDWidget::OnHealthInfoUpdated_Implementation()
+{
+    if (HealthBar)
+    {
+        float Pct = (CachedMaxHealth > 0.f) ? (CachedHealth / CachedMaxHealth) : 0.f;
+        HealthBar->SetPercent(Pct);
+
+        // Color: green > 60%, yellow > 30%, red below
+        if (Pct > 0.6f)
+            HealthBar->SetFillColorAndOpacity(FLinearColor(0.2f, 0.8f, 0.2f));
+        else if (Pct > 0.3f)
+            HealthBar->SetFillColorAndOpacity(FLinearColor(0.9f, 0.8f, 0.1f));
+        else
+            HealthBar->SetFillColorAndOpacity(FLinearColor(0.8f, 0.15f, 0.15f));
+    }
+
+    if (HealthText)
+    {
+        HealthText->SetText(FText::FromString(
+            FString::Printf(TEXT("%.0f/%.0f"), CachedHealth, CachedMaxHealth)));
+    }
+
+    if (ZoneText)
+    {
+        // Color zone by difficulty: 1=green, 2=yellow, 3=orange, 4=red, 5=purple
+        FLinearColor ZoneColor;
+        switch (CachedDifficulty)
+        {
+        case 1:  ZoneColor = FLinearColor(0.4f, 0.9f, 0.4f); break;
+        case 2:  ZoneColor = FLinearColor(0.9f, 0.9f, 0.3f); break;
+        case 3:  ZoneColor = FLinearColor(0.9f, 0.6f, 0.2f); break;
+        case 4:  ZoneColor = FLinearColor(0.9f, 0.2f, 0.2f); break;
+        default: ZoneColor = FLinearColor(0.7f, 0.2f, 0.9f); break;
+        }
+        ZoneText->SetColorAndOpacity(FSlateColor(ZoneColor));
+        ZoneText->SetText(FText::FromString(CachedZoneName));
     }
 }

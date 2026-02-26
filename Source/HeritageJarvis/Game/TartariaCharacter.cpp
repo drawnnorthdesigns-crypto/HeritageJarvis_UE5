@@ -187,3 +187,33 @@ void ATartariaCharacter::ToggleDashboard()
 		GM->ToggleDashboardOverlay();
 	}
 }
+
+// -------------------------------------------------------
+// Health / Combat (Phase 2)
+// -------------------------------------------------------
+
+void ATartariaCharacter::ApplyDamage(float DamageAmount)
+{
+	if (bIsDead) return;
+
+	CurrentHealth = FMath::Max(0.0f, CurrentHealth - DamageAmount);
+	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+
+	UE_LOG(LogTemp, Log, TEXT("TartariaCharacter: Took %.0f damage, HP=%.0f/%.0f"),
+		DamageAmount, CurrentHealth, MaxHealth);
+
+	if (CurrentHealth <= 0.0f)
+	{
+		bIsDead = true;
+		OnPlayerDeath.Broadcast();
+		UE_LOG(LogTemp, Warning, TEXT("TartariaCharacter: Player died!"));
+	}
+}
+
+void ATartariaCharacter::Heal(float HealAmount)
+{
+	if (bIsDead) return;
+
+	CurrentHealth = FMath::Min(MaxHealth, CurrentHealth + HealAmount);
+	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+}
