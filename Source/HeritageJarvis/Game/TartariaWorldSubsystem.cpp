@@ -90,6 +90,14 @@ void UTartariaWorldSubsystem::Tick(float DeltaTime)
 		TickTimer = 0.f;
 		ExecuteGameTick();
 	}
+
+	// Periodic strategic status poll (fleet, tech, mining)
+	StrategicTimer += DeltaTime;
+	if (StrategicTimer >= StrategicPollSec)
+	{
+		StrategicTimer = 0.f;
+		PollStrategicStatus();
+	}
 }
 
 void UTartariaWorldSubsystem::SyncWithBackend()
@@ -318,4 +326,97 @@ void UTartariaWorldSubsystem::ParseTickResponse(const FString& JsonBody)
 		UE_LOG(LogTemp, Log, TEXT("TartariaWorldSubsystem: Tick produced %d events"), Events.Num());
 		OnTickCompleted.Broadcast(Events);
 	}
+}
+
+// -------------------------------------------------------
+// Strategic status (fleet, tech, mining)
+// -------------------------------------------------------
+
+void UTartariaWorldSubsystem::PollStrategicStatus()
+{
+	UHJGameInstance* GI = UHJGameInstance::Get(GetWorld());
+	if (!GI || !GI->ApiClient) return;
+
+	FOnApiResponse CB;
+	CB.BindUObject(this, &UTartariaWorldSubsystem::OnStrategicResponse);
+	GI->ApiClient->Get(TEXT("/api/game/status/full"), CB);
+}
+
+void UTartariaWorldSubsystem::OnStrategicResponse(bool bSuccess, const FString& Body)
+{
+	if (!bSuccess) return;
+	ParseStrategicStatus(Body);
+}
+
+void UTartariaWorldSubsystem::ParseStrategicStatus(const FString& JsonBody)
+{
+	TSharedPtr<FJsonObject> Root;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonBody);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid()) return;
+
+	// Parse fleet
+	const TSharedPtr<FJsonObject>* FleetObj;
+	if (Root->TryGetObjectField(TEXT("fleet"), FleetObj))
+	{
+		double Total = 0, Reserve = 0, Deployed = 0;
+		(*FleetObj)->TryGetNumberField(TEXT("total_fleet_power"), Total);
+		(*FleetObj)->TryGetNumberField(TEXT("reserve_power"), Reserve);
+		(*FleetObj)->TryGetNumberField(TEXT("deployed_power"), Deployed);
+		Fleet.TotalPower = static_cast<int32>(Total);
+		Fleet.ReservePower = static_cast<int32>(Reserve);
+		Fleet.DeployedPower = static_cast<int32>(Deployed);
+
+		// Count deployed zones
+		const TSharedPtr<FJsonObject>* DeployObj;
+		if ((*FleetObj)->TryGetObjectField(TEXT("deployments"), DeployObj))
+		{
+			int32 Zones = 0;
+			for (const auto& Pair : (*DeployObj)->Values)
+			{
+				const TSharedPtr<FJsonObject>* ZObj;
+				if (Pair.Value->TryGetObject(ZObj))
+				{
+					double Pwr = 0;
+					(*ZObj)->TryGetNumberField(TEXT("power"), Pwr);
+					if (Pwr > 0 && Pair.Key != TEXT("RESERVE"))
+						Zones++;
+				}
+			}
+			Fleet.DeployedZones = Zones;
+		}
+	}
+
+	// Parse tech tree
+	const TSharedPtr<FJsonObject>* TechObj;
+	if (Root->TryGetObjectField(TEXT("tech_tree"), TechObj))
+	{
+		double TotalN = 0, Unlocked = 0;
+		(*TechObj)->TryGetNumberField(TEXT("total_nodes"), TotalN);
+		(*TechObj)->TryGetNumberField(TEXT("unlocked_count"), Unlocked);
+		Tech.TotalNodes = static_cast<int32>(TotalN);
+		Tech.UnlockedCount = static_cast<int32>(Unlocked);
+
+		// Get available next count
+		const TArray<TSharedPtr<FJsonValue>>* AvailArr;
+		if ((*TechObj)->TryGetArrayField(TEXT("available_next"), AvailArr))
+			Tech.AvailableNext = AvailArr->Num();
+
+		// Get highest unlocked tech
+		const TArray<TSharedPtr<FJsonValue>>* UnlockedArr;
+		if ((*TechObj)->TryGetArrayField(TEXT("unlocked"), UnlockedArr) && UnlockedArr->Num() > 0)
+			Tech.HighestTech = (*UnlockedArr)[UnlockedArr->Num() - 1]->AsString();
+	}
+
+	// Parse mining
+	const TSharedPtr<FJsonObject>* MiningObj;
+	if (Root->TryGetObjectField(TEXT("mining"), MiningObj))
+	{
+		double Mined = 0, Scanned = 0;
+		(*MiningObj)->TryGetNumberField(TEXT("total_mined"), Mined);
+		(*MiningObj)->TryGetNumberField(TEXT("asteroids_scanned"), Scanned);
+		Mining.TotalMined = static_cast<int32>(Mined);
+		Mining.AsteroidsScanned = static_cast<int32>(Scanned);
+	}
+
+	OnGameStateUpdated.Broadcast();
 }

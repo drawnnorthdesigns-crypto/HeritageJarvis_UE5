@@ -201,3 +201,54 @@ struct FTartariaCraftingRecipe
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Crafting")
 	bool bCanCraft = false;  // Set client-side based on inventory
 };
+
+/** Fleet summary — parsed from /api/game/status/full. */
+USTRUCT(BlueprintType)
+struct FTartariaFleetSummary
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Fleet")
+	int32 TotalPower = 500;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Fleet")
+	int32 ReservePower = 500;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Fleet")
+	int32 DeployedPower = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Fleet")
+	int32 DeployedZones = 0;
+};
+
+/** Tech tree summary — parsed from /api/game/status/full. */
+USTRUCT(BlueprintType)
+struct FTartariaTechSummary
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Tech")
+	int32 TotalNodes = 8;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Tech")
+	int32 UnlockedCount = 1;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Tech")
+	int32 AvailableNext = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Tech")
+	FString HighestTech;
+};
+
+/** Mining summary — parsed from /api/game/status/full. */
+USTRUCT(BlueprintType)
+struct FTartariaMiningSummary
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Mining")
+	int32 TotalMined = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Mining")
+	int32 AsteroidsScanned = 0;
+};

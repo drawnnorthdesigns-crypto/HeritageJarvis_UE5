@@ -373,6 +373,9 @@ void ATartariaGameMode::OnGameStateUpdated()
 	{
 		HUDWidget->SetFactionInfo(WorldSub->Factions);
 	}
+
+	// Push fleet/tech/mining data to HUD
+	HUDWidget->SetStrategicInfo(WorldSub->Fleet, WorldSub->Tech, WorldSub->Mining);
 }
 
 void ATartariaGameMode::OnTickCompleted(const TArray<FTartariaTickEvent>& Events)

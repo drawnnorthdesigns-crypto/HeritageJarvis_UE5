@@ -479,6 +479,63 @@ void UHJHUDWidget::BuildProgrammaticLayout()
             Slot->SetVerticalAlignment(VAlign_Center);
     }
 
+    // Separator spacer
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpStrategicSep"));
+        Sp->SetSize(FVector2D(24, 0));
+        HBox3->AddChild(Sp);
+    }
+
+    // Fleet text (cyan)
+    FleetText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("FleetText"));
+    FleetText->SetText(FText::FromString(TEXT("Fleet: 500")));
+    FleetText->SetColorAndOpacity(FSlateColor(FLinearColor(0.3f, 0.7f, 0.9f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+        FleetText->SetFont(Font);
+    }
+    HBox3->AddChild(FleetText);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(FleetText->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
+    // Spacer
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpFleetTech"));
+        Sp->SetSize(FVector2D(12, 0));
+        HBox3->AddChild(Sp);
+    }
+
+    // Tech text (green)
+    TechText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("TechText"));
+    TechText->SetText(FText::FromString(TEXT("Tech: 1/8")));
+    TechText->SetColorAndOpacity(FSlateColor(FLinearColor(0.4f, 0.9f, 0.4f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+        TechText->SetFont(Font);
+    }
+    HBox3->AddChild(TechText);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(TechText->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
+    // Spacer
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpTechMine"));
+        Sp->SetSize(FVector2D(12, 0));
+        HBox3->AddChild(Sp);
+    }
+
+    // Mining text (amber)
+    MiningText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("MiningText"));
+    MiningText->SetText(FText::FromString(TEXT("Mined: 0")));
+    MiningText->SetColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.7f, 0.2f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+        MiningText->SetFont(Font);
+    }
+    HBox3->AddChild(MiningText);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(MiningText->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
     // Fill spacer
     {
         USpacer* SpFill3 = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpFacFill"));
@@ -634,6 +691,40 @@ void UHJHUDWidget::OnGameEconomyUpdated_Implementation()
         ResourcesText->SetText(FText::FromString(
             FString::Printf(TEXT("Fe:%d  St:%d  Kn:%d  Cr:%d"),
                 IronCount, StoneCount, KnowledgeCount, CrystalCount)));
+    }
+}
+
+void UHJHUDWidget::SetStrategicInfo(const FTartariaFleetSummary& InFleet,
+                                     const FTartariaTechSummary& InTech,
+                                     const FTartariaMiningSummary& InMining)
+{
+    CachedFleet = InFleet;
+    CachedTech = InTech;
+    CachedMining = InMining;
+    OnStrategicInfoUpdated();
+}
+
+void UHJHUDWidget::OnStrategicInfoUpdated_Implementation()
+{
+    if (FleetText)
+    {
+        FString Deployed = CachedFleet.DeployedZones > 0
+            ? FString::Printf(TEXT(" (%d zones)"), CachedFleet.DeployedZones)
+            : TEXT("");
+        FleetText->SetText(FText::FromString(
+            FString::Printf(TEXT("Fleet: %d%s"), CachedFleet.TotalPower, *Deployed)));
+    }
+
+    if (TechText)
+    {
+        TechText->SetText(FText::FromString(
+            FString::Printf(TEXT("Tech: %d/%d"), CachedTech.UnlockedCount, CachedTech.TotalNodes)));
+    }
+
+    if (MiningText)
+    {
+        MiningText->SetText(FText::FromString(
+            FString::Printf(TEXT("Mined: %s"), *FString::FormatAsNumber(CachedMining.TotalMined))));
     }
 }
 

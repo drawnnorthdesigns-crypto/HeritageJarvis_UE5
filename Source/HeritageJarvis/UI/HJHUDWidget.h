@@ -105,6 +105,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
     void SetFactionInfo(const TArray<FTartariaFactionInfo>& InFactions);
 
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void SetStrategicInfo(const FTartariaFleetSummary& InFleet,
+                          const FTartariaTechSummary& InTech,
+                          const FTartariaMiningSummary& InMining);
+
     /** Fix 3.5: Update the offline queue count badge */
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
     void SetQueueCount(int32 Count);
@@ -127,6 +132,9 @@ public:
 
     UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
     void OnFactionInfoUpdated();
+
+    UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
+    void OnStrategicInfoUpdated();
 
 private:
     // -------------------------------------------------------
@@ -198,4 +206,18 @@ private:
     TArray<UTextBlock*> FactionValues;
 
     TArray<FTartariaFactionInfo> CachedFactions;
+
+    // Strategic indicators (Phase 5)
+    UPROPERTY()
+    UTextBlock* FleetText = nullptr;
+
+    UPROPERTY()
+    UTextBlock* TechText = nullptr;
+
+    UPROPERTY()
+    UTextBlock* MiningText = nullptr;
+
+    FTartariaFleetSummary CachedFleet;
+    FTartariaTechSummary CachedTech;
+    FTartariaMiningSummary CachedMining;
 };

@@ -52,6 +52,19 @@ public:
 	TArray<FTartariaInventoryItem> Inventory;
 
 	// -------------------------------------------------------
+	// Strategic (fleet, tech, mining)
+	// -------------------------------------------------------
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Strategic")
+	FTartariaFleetSummary Fleet;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Strategic")
+	FTartariaTechSummary Tech;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Strategic")
+	FTartariaMiningSummary Mining;
+
+	// -------------------------------------------------------
 	// Delegates
 	// -------------------------------------------------------
 
@@ -101,6 +114,10 @@ private:
 	void OnTickResponse(bool bSuccess, const FString& Body);
 	void ParseTickResponse(const FString& JsonBody);
 
+	void PollStrategicStatus();
+	void OnStrategicResponse(bool bSuccess, const FString& Body);
+	void ParseStrategicStatus(const FString& JsonBody);
+
 	/** Time accumulator for periodic backend sync. */
 	float SyncTimer = 0.f;
 
@@ -114,6 +131,10 @@ private:
 	/** Time accumulator for game ticks. */
 	float TickTimer = 0.f;
 	static constexpr float TickIntervalSec = 30.f;  // 1 game tick per 30s real time
+
+	/** Time accumulator for strategic status poll. */
+	float StrategicTimer = 0.f;
+	static constexpr float StrategicPollSec = 15.f;
 
 	/** Spawned quest markers tracked for cleanup. */
 	UPROPERTY()
