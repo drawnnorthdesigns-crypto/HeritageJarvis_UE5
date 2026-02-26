@@ -12,6 +12,7 @@ class UHJDebugWidget;
 class UHJLoadingWidget;
 class UHJDashboardWidget;
 class UHJThreatWidget;
+class UHJInventoryWidget;
 class UTartariaWorldPopulator;
 class ATartariaBiomeVolume;
 
@@ -55,6 +56,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HJ|UI")
 	TSubclassOf<UHJThreatWidget> ThreatWidgetClass;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HJ|UI")
+	TSubclassOf<UHJInventoryWidget> InventoryWidgetClass;
+
 	// -------------------------------------------------------
 	// Live widget references
 	// -------------------------------------------------------
@@ -73,6 +77,9 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, Category = "HJ|UI")
 	UHJThreatWidget* ThreatWidget = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "HJ|UI")
+	UHJInventoryWidget* InventoryWidget = nullptr;
 
 	// -------------------------------------------------------
 	// Actions
@@ -95,11 +102,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria")
 	void OpenDashboardToRoute(const FString& Route);
 
+	/** Toggle inventory + crafting panel (bound to I key). */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria")
+	void ToggleInventory();
+
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria")
 	bool bPauseMenuOpen = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria")
 	bool bDashboardOpen = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria")
+	bool bInventoryOpen = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria")
 	UHJDashboardWidget* DashOverlayWidget = nullptr;

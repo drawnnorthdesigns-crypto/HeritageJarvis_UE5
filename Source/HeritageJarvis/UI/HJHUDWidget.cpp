@@ -209,7 +209,7 @@ void UHJHUDWidget::BuildProgrammaticLayout()
 
     // --- Esc hint text ---
     EscHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("EscHintText"));
-    EscHintText->SetText(FText::FromString(TEXT("ESC: Menu | F3: Debug")));
+    EscHintText->SetText(FText::FromString(TEXT("ESC: Menu | I: Inventory | F3: Debug")));
     EscHintText->SetColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)));
     {
         FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 10);

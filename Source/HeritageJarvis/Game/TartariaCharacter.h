@@ -103,6 +103,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria")
 	void ToggleDashboard();
 
+	/** Toggle inventory panel (bound to I key). */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria")
+	void ToggleInventory();
+
 private:
 	void MoveForward(float Value);
 	void MoveRight(float Value);

@@ -7,6 +7,8 @@
 #include "TartariaTypes.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Components/StaticMeshComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 // -------------------------------------------------------
 // Main entry point
@@ -174,6 +176,24 @@ void UTartariaWorldPopulator::SpawnResourceNodes(UWorld* World)
 		{
 			Node->ResourceType = Def.Type;
 			Node->Tags.Add(Def.Tag);
+
+			// Per-type color
+			switch (Def.Type)
+			{
+			case ETartariaResourceType::Iron:
+				SetMeshColor(Node->ResourceMesh, FLinearColor(0.6f, 0.3f, 0.1f));
+				break;
+			case ETartariaResourceType::Stone:
+				SetMeshColor(Node->ResourceMesh, FLinearColor(0.5f, 0.5f, 0.5f));
+				break;
+			case ETartariaResourceType::Knowledge:
+				SetMeshColor(Node->ResourceMesh, FLinearColor(0.2f, 0.4f, 0.9f));
+				break;
+			case ETartariaResourceType::Crystal:
+				SetMeshColor(Node->ResourceMesh, FLinearColor(0.7f, 0.2f, 0.8f));
+				break;
+			}
+
 			++SpawnCount;
 		}
 	}
@@ -222,6 +242,32 @@ void UTartariaWorldPopulator::SpawnBuildings(UWorld* World)
 			Bldg->BuildingName = Def.Name;
 			Bldg->BuildingType = Def.Type;
 			Bldg->Tags.Add(Def.Tag);
+
+			// Per-building color and scale
+			switch (Def.Type)
+			{
+			case ETartariaBuildingType::Forge:
+				SetMeshColor(Bldg->BuildingMesh, FLinearColor(1.0f, 0.5f, 0.0f));
+				Bldg->BuildingMesh->SetWorldScale3D(FVector(3.f, 3.f, 5.f));
+				break;
+			case ETartariaBuildingType::Scriptorium:
+				SetMeshColor(Bldg->BuildingMesh, FLinearColor(0.2f, 0.3f, 0.8f));
+				Bldg->BuildingMesh->SetWorldScale3D(FVector(4.f, 4.f, 3.f));
+				break;
+			case ETartariaBuildingType::Treasury:
+				SetMeshColor(Bldg->BuildingMesh, FLinearColor(0.9f, 0.8f, 0.2f));
+				Bldg->BuildingMesh->SetWorldScale3D(FVector(3.f, 3.f, 4.f));
+				break;
+			case ETartariaBuildingType::Barracks:
+				SetMeshColor(Bldg->BuildingMesh, FLinearColor(0.3f, 0.5f, 0.2f));
+				Bldg->BuildingMesh->SetWorldScale3D(FVector(5.f, 3.f, 3.f));
+				break;
+			case ETartariaBuildingType::Lab:
+				SetMeshColor(Bldg->BuildingMesh, FLinearColor(0.4f, 0.1f, 0.6f));
+				Bldg->BuildingMesh->SetWorldScale3D(FVector(3.f, 3.f, 6.f));
+				break;
+			}
+
 			++SpawnCount;
 			UE_LOG(LogTemp, Log, TEXT("[WorldPopulator] Spawned building: %s"), *Def.Name);
 		}
@@ -301,6 +347,19 @@ void UTartariaWorldPopulator::SpawnNPCs(UWorld* World)
 			NPC->FactionKey = Def.Faction;
 			NPC->PersonaPrompt = Def.Persona;
 			NPC->Tags.Add(Def.Tag);
+
+			// Per-NPC color on body mesh
+			if (Def.Faction == TEXT("STEWARDS"))
+				SetMeshColor(NPC->BodyMesh, FLinearColor(0.9f, 0.9f, 0.9f));
+			else if (Def.Faction == TEXT("ARCHIVISTS"))
+				SetMeshColor(NPC->BodyMesh, FLinearColor(0.3f, 0.4f, 0.8f));
+			else if (Def.Faction == TEXT("MASONS"))
+				SetMeshColor(NPC->BodyMesh, FLinearColor(0.5f, 0.35f, 0.2f));
+			else if (Def.Faction == TEXT("COMPTROLLERS"))
+				SetMeshColor(NPC->BodyMesh, FLinearColor(0.8f, 0.7f, 0.2f));
+			else if (Def.Faction == TEXT("VOID_WALKERS"))
+				SetMeshColor(NPC->BodyMesh, FLinearColor(0.5f, 0.1f, 0.7f));
+
 			++SpawnCount;
 			UE_LOG(LogTemp, Log, TEXT("[WorldPopulator] Spawned NPC: %s (%s)"), *Def.Name, *Def.Faction);
 		}
@@ -335,4 +394,12 @@ FVector UTartariaWorldPopulator::RandomOffsetInRadius(const FVector& Center, flo
 		FMath::Sin(Angle) * Dist,
 		0.f
 	);
+}
+
+void UTartariaWorldPopulator::SetMeshColor(UStaticMeshComponent* Mesh, const FLinearColor& Color)
+{
+	if (!Mesh) return;
+	UMaterialInstanceDynamic* DynMat = Mesh->CreateAndSetMaterialInstanceDynamic(0);
+	if (DynMat)
+		DynMat->SetVectorParameterValue(TEXT("Color"), Color);
 }

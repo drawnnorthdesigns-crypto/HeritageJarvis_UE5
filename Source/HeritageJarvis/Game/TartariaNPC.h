@@ -5,6 +5,8 @@
 #include "HJInteractable.h"
 #include "TartariaNPC.generated.h"
 
+class UStaticMeshComponent;
+
 /**
  * ATartariaNPC — Faction NPC in the Tartaria world.
  * Implements IHJInteractable for player dialogue.
@@ -44,6 +46,13 @@ public:
 	/** System prompt persona for LLM dialogue. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|NPC", meta = (MultiLine = true))
 	FString PersonaPrompt = TEXT("You are a wise steward of Tartaria. Speak with authority about engineering and construction.");
+
+	// -------------------------------------------------------
+	// Components
+	// -------------------------------------------------------
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|NPC")
+	UStaticMeshComponent* BodyMesh;
 
 	// -------------------------------------------------------
 	// Blueprint events

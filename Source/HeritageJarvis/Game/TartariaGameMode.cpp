@@ -15,6 +15,7 @@
 #include "UI/HJLoadingWidget.h"
 #include "UI/HJDashboardWidget.h"
 #include "UI/HJThreatWidget.h"
+#include "UI/HJInventoryWidget.h"
 #include "TartariaWorldPopulator.h"
 
 ATartariaGameMode::ATartariaGameMode()
@@ -41,6 +42,10 @@ ATartariaGameMode::ATartariaGameMode()
 	static ConstructorHelpers::FClassFinder<UHJThreatWidget> ThreatFinder(
 		TEXT("/Game/UI/WBP_Threat"));
 	if (ThreatFinder.Succeeded()) ThreatWidgetClass = ThreatFinder.Class;
+
+	static ConstructorHelpers::FClassFinder<UHJInventoryWidget> InvFinder(
+		TEXT("/Game/UI/WBP_Inventory"));
+	if (InvFinder.Succeeded()) InventoryWidgetClass = InvFinder.Class;
 }
 
 void ATartariaGameMode::BeginPlay()
@@ -133,6 +138,15 @@ void ATartariaGameMode::BeginPlay()
 			ThreatWidget->OnEncounterResolved.AddDynamic(
 				this, &ATartariaGameMode::OnEncounterResolved);
 		}
+	}
+
+	// Spawn inventory widget (hidden, toggle with I key)
+	if (InventoryWidgetClass)
+	{
+		InventoryWidget = CreateWidget<UHJInventoryWidget>(
+			UGameplayStatics::GetPlayerController(this, 0), InventoryWidgetClass);
+		if (InventoryWidget)
+			InventoryWidget->AddToViewport(20);
 	}
 
 	// Subscribe to all BiomeVolume threat/zone delegates
@@ -253,6 +267,29 @@ void ATartariaGameMode::ToggleDashboardOverlay()
 		if (DashOverlayWidget)
 			DashOverlayWidget->SetVisibility(ESlateVisibility::Collapsed);
 
+		PC->SetShowMouseCursor(false);
+		PC->SetInputMode(FInputModeGameOnly());
+	}
+}
+
+void ATartariaGameMode::ToggleInventory()
+{
+	if (!InventoryWidget) return;
+
+	bInventoryOpen = !bInventoryOpen;
+
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (!PC) return;
+
+	if (bInventoryOpen)
+	{
+		InventoryWidget->ShowInventory();
+		PC->SetShowMouseCursor(true);
+		PC->SetInputMode(FInputModeGameAndUI());
+	}
+	else
+	{
+		InventoryWidget->HideInventory();
 		PC->SetShowMouseCursor(false);
 		PC->SetInputMode(FInputModeGameOnly());
 	}

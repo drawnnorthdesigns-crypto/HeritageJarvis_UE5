@@ -1,6 +1,8 @@
 #include "TartariaNPC.h"
 #include "Core/HJGameInstance.h"
 #include "Core/HJApiClient.h"
+#include "Components/StaticMeshComponent.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonReader.h"
@@ -11,6 +13,17 @@
 ATartariaNPC::ATartariaNPC()
 {
 	PrimaryActorTick.bCanEverTick = false;
+
+	// Cylinder body mesh attached to capsule for visibility
+	BodyMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BodyMesh"));
+	BodyMesh->SetupAttachment(RootComponent);
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> MeshFinder(
+		TEXT("/Engine/BasicShapes/Cylinder"));
+	if (MeshFinder.Succeeded())
+		BodyMesh->SetStaticMesh(MeshFinder.Object);
+	BodyMesh->SetRelativeLocation(FVector(0.f, 0.f, -45.f));
+	BodyMesh->SetWorldScale3D(FVector(0.5f, 0.5f, 1.0f));
+	BodyMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
 
 void ATartariaNPC::OnInteract_Implementation(APlayerController* Interactor)

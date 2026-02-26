@@ -31,4 +31,7 @@ private:
 
 	/** Returns a random offset within Radius * 0.7 of Center. */
 	FVector RandomOffsetInRadius(const FVector& Center, float Radius) const;
+
+	/** Set a solid color on a mesh via dynamic material instance. */
+	static void SetMeshColor(UStaticMeshComponent* Mesh, const FLinearColor& Color);
 };

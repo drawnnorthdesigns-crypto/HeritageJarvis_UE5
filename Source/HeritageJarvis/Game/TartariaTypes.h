@@ -169,3 +169,35 @@ struct FTartariaEncounterResult
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
 	int32 DamageTaken = 0;
 };
+
+/** Single ingredient requirement in a crafting recipe. */
+USTRUCT(BlueprintType)
+struct FTartariaCraftIngredient
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Crafting")
+	FString ItemId;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Crafting")
+	int32 Quantity = 1;
+};
+
+/** Crafting recipe — parsed from /api/game/craft/recipes. */
+USTRUCT(BlueprintType)
+struct FTartariaCraftingRecipe
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Crafting")
+	FString RecipeKey;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Crafting")
+	FString ResultItem;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Crafting")
+	TArray<FTartariaCraftIngredient> Ingredients;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Crafting")
+	bool bCanCraft = false;  // Set client-side based on inventory
+};
