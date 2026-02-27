@@ -16,6 +16,8 @@
 #include "UI/HJDashboardWidget.h"
 #include "UI/HJThreatWidget.h"
 #include "UI/HJInventoryWidget.h"
+#include "UI/HJDialogueWidget.h"
+#include "TartariaNPC.h"
 #include "TartariaWorldPopulator.h"
 
 ATartariaGameMode::ATartariaGameMode()
@@ -46,6 +48,10 @@ ATartariaGameMode::ATartariaGameMode()
 	static ConstructorHelpers::FClassFinder<UHJInventoryWidget> InvFinder(
 		TEXT("/Game/UI/WBP_Inventory"));
 	if (InvFinder.Succeeded()) InventoryWidgetClass = InvFinder.Class;
+
+	static ConstructorHelpers::FClassFinder<UHJDialogueWidget> DlgFinder(
+		TEXT("/Game/UI/WBP_Dialogue"));
+	if (DlgFinder.Succeeded()) DialogueWidgetClass = DlgFinder.Class;
 }
 
 void ATartariaGameMode::BeginPlay()
@@ -149,8 +155,20 @@ void ATartariaGameMode::BeginPlay()
 			InventoryWidget->AddToViewport(20);
 	}
 
+	// Spawn dialogue widget (hidden, shown on NPC interaction)
+	if (DialogueWidgetClass)
+	{
+		DialogueWidget = CreateWidget<UHJDialogueWidget>(
+			UGameplayStatics::GetPlayerController(this, 0), DialogueWidgetClass);
+		if (DialogueWidget)
+			DialogueWidget->AddToViewport(22);
+	}
+
 	// Subscribe to all BiomeVolume threat/zone delegates
 	SubscribeToBiomeVolumes();
+
+	// Subscribe to all NPC dialogue delegates
+	SubscribeToNPCs();
 
 	// Subscribe to player health changes
 	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
@@ -565,5 +583,62 @@ void ATartariaGameMode::OnPlayerDeath()
 		PlayerChar->Heal(PlayerChar->MaxHealth);
 		PlayerChar->SetActorLocation(FVector(0.f, 0.f, 200.f));
 		PlayerChar->CurrentBiome = TEXT("CLEARINGHOUSE");
+	}
+}
+
+// -------------------------------------------------------
+// Phase 6: NPC dialogue handlers
+// -------------------------------------------------------
+
+void ATartariaGameMode::SubscribeToNPCs()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	for (TActorIterator<ATartariaNPC> It(World); It; ++It)
+	{
+		ATartariaNPC* NPC = *It;
+		NPC->OnDialogueStartedDelegate.AddDynamic(this, &ATartariaGameMode::OnNPCDialogueStarted);
+		NPC->OnDialogueReceivedDelegate.AddDynamic(this, &ATartariaGameMode::OnNPCDialogueReceived);
+		NPC->OnDialogueErroredDelegate.AddDynamic(this, &ATartariaGameMode::OnNPCDialogueErrored);
+	}
+}
+
+void ATartariaGameMode::OnNPCDialogueStarted(const FString& NPCName, const FString& Faction)
+{
+	if (DialogueWidget)
+	{
+		DialogueWidget->ShowDialogue(NPCName, Faction);
+
+		APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+		if (PC)
+		{
+			PC->SetShowMouseCursor(true);
+			PC->SetInputMode(FInputModeGameAndUI());
+		}
+	}
+}
+
+void ATartariaGameMode::OnNPCDialogueReceived(const FString& NPCName, const FString& ResponseText)
+{
+	if (DialogueWidget && DialogueWidget->bIsOpen)
+	{
+		DialogueWidget->SetResponse(ResponseText);
+	}
+}
+
+void ATartariaGameMode::OnNPCDialogueErrored(const FString& NPCName)
+{
+	if (DialogueWidget && DialogueWidget->bIsOpen)
+	{
+		DialogueWidget->ShowError(TEXT("Could not reach the NPC. Flask may be offline."));
+	}
+
+	// Return to game input after error
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (PC)
+	{
+		PC->SetShowMouseCursor(false);
+		PC->SetInputMode(FInputModeGameOnly());
 	}
 }

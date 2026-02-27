@@ -327,6 +327,13 @@ void UTartariaWorldPopulator::SpawnNPCs(UWorld* World)
 			TEXT("You are The Void Walker, enigmatic explorer of the Void Reach. Speak cryptically about mysteries and crystals."),
 			FVector(0.f, -345000.f, 0.f)
 		},
+		{
+			FName("NPC_TheAlchemist"),
+			TEXT("The Alchemist"),
+			TEXT("ALCHEMISTS"),
+			TEXT("You are The Alchemist, master of transmutation and research in Tartaria. Speak with wonder about discovery, experimentation, and the secrets of matter."),
+			FVector(-200000.f, 200000.f, 0.f)
+		},
 	};
 
 	int32 SpawnCount = 0;
@@ -359,6 +366,8 @@ void UTartariaWorldPopulator::SpawnNPCs(UWorld* World)
 				SetMeshColor(NPC->BodyMesh, FLinearColor(0.8f, 0.7f, 0.2f));
 			else if (Def.Faction == TEXT("VOID_WALKERS"))
 				SetMeshColor(NPC->BodyMesh, FLinearColor(0.5f, 0.1f, 0.7f));
+			else if (Def.Faction == TEXT("ALCHEMISTS"))
+				SetMeshColor(NPC->BodyMesh, FLinearColor(0.2f, 0.8f, 0.6f));
 
 			++SpawnCount;
 			UE_LOG(LogTemp, Log, TEXT("[WorldPopulator] Spawned NPC: %s (%s)"), *Def.Name, *Def.Faction);

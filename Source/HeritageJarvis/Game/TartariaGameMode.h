@@ -13,8 +13,10 @@ class UHJLoadingWidget;
 class UHJDashboardWidget;
 class UHJThreatWidget;
 class UHJInventoryWidget;
+class UHJDialogueWidget;
 class UTartariaWorldPopulator;
 class ATartariaBiomeVolume;
+class ATartariaNPC;
 
 /**
  * ATartariaGameMode — Game mode for the Tartaria open world.
@@ -59,6 +61,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HJ|UI")
 	TSubclassOf<UHJInventoryWidget> InventoryWidgetClass;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "HJ|UI")
+	TSubclassOf<UHJDialogueWidget> DialogueWidgetClass;
+
 	// -------------------------------------------------------
 	// Live widget references
 	// -------------------------------------------------------
@@ -80,6 +85,9 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, Category = "HJ|UI")
 	UHJInventoryWidget* InventoryWidget = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "HJ|UI")
+	UHJDialogueWidget* DialogueWidget = nullptr;
 
 	// -------------------------------------------------------
 	// Actions
@@ -163,4 +171,14 @@ private:
 	void OnPlayerDeath();
 
 	void SubscribeToBiomeVolumes();
+	void SubscribeToNPCs();
+
+	UFUNCTION()
+	void OnNPCDialogueStarted(const FString& NPCName, const FString& Faction);
+
+	UFUNCTION()
+	void OnNPCDialogueReceived(const FString& NPCName, const FString& ResponseText);
+
+	UFUNCTION()
+	void OnNPCDialogueErrored(const FString& NPCName);
 };

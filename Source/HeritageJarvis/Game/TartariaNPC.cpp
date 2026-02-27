@@ -31,6 +31,9 @@ void ATartariaNPC::OnInteract_Implementation(APlayerController* Interactor)
 	UE_LOG(LogTemp, Log, TEXT("TartariaNPC: Player interacted with %s (%s)"),
 		*NPCName, *FactionKey);
 
+	// Fire delegates so GameMode can show dialogue widget
+	OnDialogueStartedDelegate.Broadcast(NPCName, FactionKey);
+
 	// Send initial greeting dialogue
 	SendDialogueRequest(Interactor, TEXT("Greetings."));
 
@@ -75,6 +78,7 @@ void ATartariaNPC::SendDialogueRequest(APlayerController* Interactor, const FStr
 
 			if (!bOk)
 			{
+				Self->OnDialogueErroredDelegate.Broadcast(Self->NPCName);
 				Self->OnDialogueError();
 				return;
 			}
@@ -87,15 +91,18 @@ void ATartariaNPC::SendDialogueRequest(APlayerController* Interactor, const FStr
 				FString Response;
 				if (Json->TryGetStringField(TEXT("response"), Response))
 				{
+					Self->OnDialogueReceivedDelegate.Broadcast(Self->NPCName, Response);
 					Self->OnDialogueResponse(Response);
 				}
 				else
 				{
+					Self->OnDialogueErroredDelegate.Broadcast(Self->NPCName);
 					Self->OnDialogueError();
 				}
 			}
 			else
 			{
+				Self->OnDialogueErroredDelegate.Broadcast(Self->NPCName);
 				Self->OnDialogueError();
 			}
 		});

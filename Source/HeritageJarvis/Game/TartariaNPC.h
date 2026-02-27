@@ -70,6 +70,25 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Tartaria|NPC")
 	void OnDialogueError();
 
+	// -------------------------------------------------------
+	// C++ delegates (for GameMode to subscribe)
+	// -------------------------------------------------------
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNPCDialogueStarted, const FString&, NPCName, const FString&, Faction);
+
+	UPROPERTY(BlueprintAssignable, Category = "Tartaria|NPC")
+	FOnNPCDialogueStarted OnDialogueStartedDelegate;
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNPCDialogueReceived, const FString&, NPCName, const FString&, ResponseText);
+
+	UPROPERTY(BlueprintAssignable, Category = "Tartaria|NPC")
+	FOnNPCDialogueReceived OnDialogueReceivedDelegate;
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNPCDialogueErrored, const FString&, NPCName);
+
+	UPROPERTY(BlueprintAssignable, Category = "Tartaria|NPC")
+	FOnNPCDialogueErrored OnDialogueErroredDelegate;
+
 private:
 	void SendDialogueRequest(APlayerController* Interactor, const FString& PlayerMessage);
 };
