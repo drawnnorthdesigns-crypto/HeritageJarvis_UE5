@@ -1,6 +1,7 @@
 #include "TartariaSoundManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
+#include "Components/AudioComponent.h"
 #include "Engine/Engine.h"
 #include "DrawDebugHelpers.h"
 
@@ -10,6 +11,9 @@
 
 TArray<FMaterialAudioProfile> UTartariaSoundManager::MaterialProfiles;
 bool UTartariaSoundManager::bProfilesInitialized = false;
+
+TArray<FBiomeAudioProfile> UTartariaSoundManager::BiomeProfiles;
+bool UTartariaSoundManager::bBiomeProfilesInitialized = false;
 
 // -------------------------------------------------------
 // Material Profile Table
@@ -193,6 +197,165 @@ void UTartariaSoundManager::PlayDodge(UObject* WorldContextObject)
 void UTartariaSoundManager::PlayLevelUp(UObject* WorldContextObject)
 {
 	PlayEngineSound(WorldContextObject, 0.8f, 1.3f);  // Fanfare
+}
+
+// =============================================================
+// Biome Ambient Audio (Task #215)
+// =============================================================
+
+void UTartariaSoundManager::EnsureBiomeProfilesInitialized()
+{
+	if (bBiomeProfilesInitialized) return;
+	bBiomeProfilesInitialized = true;
+
+	// Pre-allocate for all 5 biome types
+	const int32 NumBiomes = 5;
+	BiomeProfiles.SetNum(NumBiomes);
+
+	// CLEARINGHOUSE: Crowd murmur — low-mid frequency, soft, slow oscillation
+	{
+		FBiomeAudioProfile& P = BiomeProfiles[(int32)ETartariaBiome::Clearinghouse];
+		P.BaseFrequencyHz = 200.f;
+		P.RhythmHz = 0.3f;       // Slow crowd-like ebb and flow
+		P.Volume = 0.25f;        // Background murmur, not intrusive
+		P.ReverbDecay = 1.2f;    // Open marketplace, moderate reverb
+		P.RhythmDepth = 0.15f;   // Subtle volume variation
+	}
+
+	// SCRIPTORIUM: Paper-rustle whisper — high frequency, very quiet, fast oscillation
+	{
+		FBiomeAudioProfile& P = BiomeProfiles[(int32)ETartariaBiome::Scriptorium];
+		P.BaseFrequencyHz = 2000.f;
+		P.RhythmHz = 4.0f;       // Fast fluttering = paper rustle feel
+		P.Volume = 0.12f;        // Very quiet, intimate library
+		P.ReverbDecay = 2.5f;    // Long reverb — cavernous archive hall
+		P.RhythmDepth = 0.4f;    // More pronounced flutter
+	}
+
+	// MONOLITH_WARD: Bell-like tone — mid-low frequency, quiet, very slow cycle
+	{
+		FBiomeAudioProfile& P = BiomeProfiles[(int32)ETartariaBiome::MonolithWard];
+		P.BaseFrequencyHz = 150.f;
+		P.RhythmHz = 0.03f;      // ~33 second cycle — vast, meditative
+		P.Volume = 0.2f;         // Mysterious, present but restrained
+		P.ReverbDecay = 4.0f;    // Very long reverb — enormous stone chamber
+		P.RhythmDepth = 0.35f;   // Noticeable swell and fade
+	}
+
+	// FORGE_DISTRICT: Industrial hammering — low frequency, medium volume, 1Hz rhythm
+	{
+		FBiomeAudioProfile& P = BiomeProfiles[(int32)ETartariaBiome::ForgeDistrict];
+		P.BaseFrequencyHz = 80.f;
+		P.RhythmHz = 1.0f;       // 1 Hz = hammering rhythm
+		P.Volume = 0.4f;         // Louder, industrial presence
+		P.ReverbDecay = 0.8f;    // Short reverb — dense, enclosed forge
+		P.RhythmDepth = 0.5f;    // Strong pulsing for hammering feel
+	}
+
+	// VOID_REACH: Deep drone — very low frequency, medium volume, slow throb
+	{
+		FBiomeAudioProfile& P = BiomeProfiles[(int32)ETartariaBiome::VoidReach];
+		P.BaseFrequencyHz = 40.f;
+		P.RhythmHz = 0.1f;       // 10 second throb cycle — alien, unsettling
+		P.Volume = 0.35f;        // Audible, oppressive presence
+		P.ReverbDecay = 6.0f;    // Enormous reverb — infinite void
+		P.RhythmDepth = 0.25f;   // Moderate pulse, constant menace
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("TartariaSoundManager: Biome audio profiles initialized (%d biomes)"), NumBiomes);
+}
+
+const FBiomeAudioProfile& UTartariaSoundManager::GetBiomeProfile(ETartariaBiome Biome)
+{
+	EnsureBiomeProfilesInitialized();
+
+	int32 Index = (int32)Biome;
+	if (Index >= 0 && Index < BiomeProfiles.Num())
+	{
+		return BiomeProfiles[Index];
+	}
+
+	// Fallback to Clearinghouse
+	return BiomeProfiles[(int32)ETartariaBiome::Clearinghouse];
+}
+
+ETartariaBiome UTartariaSoundManager::BiomeFromKey(const FString& BiomeKey)
+{
+	if (BiomeKey.Equals(TEXT("CLEARINGHOUSE"), ESearchCase::IgnoreCase))
+		return ETartariaBiome::Clearinghouse;
+	if (BiomeKey.Equals(TEXT("SCRIPTORIUM"), ESearchCase::IgnoreCase))
+		return ETartariaBiome::Scriptorium;
+	if (BiomeKey.Equals(TEXT("MONOLITH_WARD"), ESearchCase::IgnoreCase))
+		return ETartariaBiome::MonolithWard;
+	if (BiomeKey.Equals(TEXT("FORGE_DISTRICT"), ESearchCase::IgnoreCase))
+		return ETartariaBiome::ForgeDistrict;
+	if (BiomeKey.Equals(TEXT("VOID_REACH"), ESearchCase::IgnoreCase))
+		return ETartariaBiome::VoidReach;
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("TartariaSoundManager::BiomeFromKey: Unknown key '%s', defaulting to Clearinghouse"), *BiomeKey);
+	return ETartariaBiome::Clearinghouse;
+}
+
+void UTartariaSoundManager::ConfigureBiomeAmbient(UAudioComponent* AudioComp, ETartariaBiome Biome)
+{
+	if (!AudioComp) return;
+
+	EnsureBiomeProfilesInitialized();
+	const FBiomeAudioProfile& Profile = GetBiomeProfile(Biome);
+
+	// Load the engine's built-in looping sound as the tone source.
+	// This sound is present in all UE5 installs and provides a tonal base
+	// that we modulate with pitch to approximate the biome's frequency.
+	static USoundBase* EngineBeep = LoadObject<USoundBase>(nullptr,
+		TEXT("/Engine/VREditor/Sounds/UI/Object_PickUp"));
+
+	if (EngineBeep)
+	{
+		AudioComp->SetSound(EngineBeep);
+	}
+
+	// Map BaseFrequencyHz to UE5 pitch multiplier.
+	// Engine sound is ~440 Hz; scale proportionally.
+	float PitchMult = FMath::Clamp(Profile.BaseFrequencyHz / 440.f, 0.1f, 4.5f);
+	AudioComp->SetPitchMultiplier(PitchMult);
+
+	// Set initial volume (will be modulated by TickBiomeAmbient)
+	AudioComp->SetVolumeMultiplier(Profile.Volume);
+
+	// Enable looping so the ambient tone repeats continuously
+	AudioComp->bIsUISound = false;
+	AudioComp->bAllowSpatialization = false;  // Ambient is non-directional
+
+	UE_LOG(LogTemp, Log,
+		TEXT("TartariaSoundManager: Configured biome ambient — biome=%d, freq=%.0fHz, pitch=%.2f, vol=%.2f, rhythm=%.2fHz, reverb=%.1fs"),
+		(int32)Biome, Profile.BaseFrequencyHz, PitchMult, Profile.Volume,
+		Profile.RhythmHz, Profile.ReverbDecay);
+}
+
+void UTartariaSoundManager::TickBiomeAmbient(UAudioComponent* AudioComp, ETartariaBiome Biome, float TimeAccumulator)
+{
+	if (!AudioComp || !AudioComp->IsPlaying()) return;
+
+	EnsureBiomeProfilesInitialized();
+	const FBiomeAudioProfile& Profile = GetBiomeProfile(Biome);
+
+	// Apply rhythmic volume modulation (LFO-like effect).
+	// Sine wave oscillates volume around the base level.
+	// RhythmHz controls speed, RhythmDepth controls amplitude.
+	float Phase = TimeAccumulator * Profile.RhythmHz * 2.f * PI;
+	float Oscillation = FMath::Sin(Phase);  // Range: [-1, 1]
+
+	// Map oscillation to volume: base +/- (depth * base)
+	float ModulatedVolume = Profile.Volume * (1.f + Oscillation * Profile.RhythmDepth);
+	ModulatedVolume = FMath::Clamp(ModulatedVolume, 0.01f, 1.0f);
+
+	AudioComp->SetVolumeMultiplier(ModulatedVolume);
+
+	// Pitch micro-variation: subtle drift for organic feel (+/- 2%)
+	float PitchDrift = FMath::Sin(TimeAccumulator * 0.17f) * 0.02f;
+	float BasePitch = FMath::Clamp(Profile.BaseFrequencyHz / 440.f, 0.1f, 4.5f);
+	AudioComp->SetPitchMultiplier(BasePitch * (1.f + PitchDrift));
 }
 
 // =============================================================

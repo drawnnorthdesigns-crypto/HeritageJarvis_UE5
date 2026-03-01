@@ -3,12 +3,15 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "Components/TextRenderComponent.h"
+#include "Components/WidgetComponent.h"
 #include "HJInteractable.h"
 #include "TartariaTypes.h"
 #include "TartariaNPC.generated.h"
 
 class UStaticMeshComponent;
 class UPointLightComponent;
+class UWidgetComponent;
+class UTextBlock;
 
 /**
  * ATartariaNPC — Faction NPC in the Tartaria world.
@@ -212,6 +215,20 @@ public:
 	/** Force-fetch reputation from the Python backend. */
 	void FetchReputationTier();
 
+	// ── Emissive Reputation Glow ────────────────────────────
+	/** Set the emissive glow color on all body meshes based on reputation score (0-100). */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|NPC")
+	void UpdateReputationGlow(int32 ReputationScore);
+
+	// ── Speech Bubble ───────────────────────────────────────
+	/** Show speech bubble text above NPC head for Duration seconds. */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|NPC")
+	void ShowSpeechBubble(const FString& Text, float Duration = 5.f);
+
+	/** Hide the speech bubble immediately. */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|NPC")
+	void HideSpeechBubble();
+
 private:
 	void SendDialogueRequest(APlayerController* Interactor, const FString& PlayerMessage);
 
@@ -272,4 +289,33 @@ private:
 
 	/** Map an activity string (from Python) to the ENPCActivityState enum. */
 	static ENPCActivityState MapActivityStringToState(const FString& Activity);
+
+	// ── Emissive Reputation Glow (private state) ─────────────
+	/** Dynamic material instances for body meshes — used to set EmissiveColor. */
+	UPROPERTY()
+	TArray<UMaterialInstanceDynamic*> BodyDynamicMaterials;
+
+	/** Emissive intensity multiplier (makes glow visible from ~50m). */
+	static constexpr float EmissiveStrength = 2.0f;
+
+	/** Map a reputation score (0-100) to an emissive color. */
+	static FLinearColor GetEmissiveTierColor(int32 Score);
+
+	/** Create dynamic material instances on all body meshes for emissive control. */
+	void InitBodyEmissiveMaterials();
+
+	// ── Speech Bubble (private state) ────────────────────────
+	/** Widget component for the 3D speech bubble above the NPC head. */
+	UPROPERTY()
+	UWidgetComponent* SpeechBubble = nullptr;
+
+	/** Current speech text (empty = hidden). */
+	FString CurrentSpeechText;
+
+	/** Timer handle for auto-hiding the speech bubble. */
+	FTimerHandle SpeechTimerHandle;
+
+	/** Cached text block inside the speech bubble widget. */
+	UPROPERTY()
+	UTextBlock* SpeechTextBlock = nullptr;
 };

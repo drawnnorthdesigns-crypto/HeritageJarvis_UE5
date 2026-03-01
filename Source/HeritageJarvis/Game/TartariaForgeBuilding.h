@@ -36,6 +36,7 @@ class HERITAGEJARVIS_API ATartariaForgeBuilding : public AActor, public IHJInter
 public:
 	ATartariaForgeBuilding();
 
+	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
 
 	// -------------------------------------------------------
@@ -251,7 +252,80 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Forge|Proxy")
 	void SolidifyProxy();
 
+	// -------------------------------------------------------
+	// Ember Particle Pool — chimney spark effect
+	// -------------------------------------------------------
+
+	/** Current ember spawn rate (particles per second). Scales with forge activity. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Forge|Embers")
+	float EmberSpawnRate = 5.f;
+
 private:
+	// --- Ember Particle Pool ---
+	static constexpr int32 MAX_EMBERS = 20;
+
+	/** Pre-allocated sphere meshes used as ember particles. */
+	UPROPERTY()
+	TArray<UStaticMeshComponent*> EmberPool;
+
+	/** Per-ember dynamic materials for color/emissive fading. */
+	UPROPERTY()
+	TArray<UMaterialInstanceDynamic*> EmberMaterials;
+
+	/** Per-ember remaining lifetime (<=0 means inactive/available). */
+	TArray<float> EmberLifetimes;
+
+	/** Per-ember max lifetime (for fade calculation). */
+	TArray<float> EmberMaxLifetimes;
+
+	/** Per-ember velocity (cm/s) — upward + random drift. */
+	TArray<FVector> EmberVelocities;
+
+	/** Per-ember initial scale (randomized on spawn). */
+	TArray<FVector> EmberScales;
+
+	/** Accumulator for spawn timing. */
+	float EmberSpawnAccumulator = 0.f;
+
+	/** Initialize the ember mesh pool (called from BeginPlay). */
+	void InitEmberPool();
+
+	/** Activate one ember from the pool at the chimney top. */
+	void SpawnEmber();
+
+	/** Tick all active embers: move, fade, recycle. */
+	void UpdateEmbers(float DeltaTime);
+
+	/** Set ember spawn rate based on forge activity (called from ApplyQueueVisuals). */
+	void SetEmberSpawnRate(float Rate);
+
+	// --- Proxy Primitive Object Pool ---
+	static constexpr int32 PROXY_POOL_SIZE = 50;
+
+	UPROPERTY()
+	TArray<UStaticMeshComponent*> ProxyPool;
+
+	/** Bitfield tracking which pool slots are in use. */
+	TArray<bool> ProxyPoolInUse;
+
+	/** Number of currently active (visible) proxy primitives. */
+	int32 ActiveProxyCount = 0;
+
+	/** Whether pool-exhausted warning has already been logged this session. */
+	bool bPoolExhaustedWarned = false;
+
+	/** Initialize the pool (called from BeginPlay). */
+	void InitProxyPool();
+
+	/** Acquire a mesh component from the pool. Returns nullptr if pool exhausted. */
+	UStaticMeshComponent* AcquireProxyPrimitive();
+
+	/** Release a mesh component back to the pool (hides it, resets transform). */
+	void ReleaseProxyPrimitive(UStaticMeshComponent* Comp);
+
+	/** Release all active proxy primitives back to pool. */
+	void ReleaseAllProxies();
+
 	/** Timer accumulator for queue status polling (every 5 seconds) */
 	float QueuePollTimer = 0.0f;
 

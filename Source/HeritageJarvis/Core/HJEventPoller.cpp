@@ -129,17 +129,40 @@ void UHJEventPoller::ParsePipelineResponse(bool bOk, const FString& Body, const 
     LastKnownStage  = Stage;
     bLastKnownActive = bActive;
 
+    // Parse optional intra-stage progress fields
+    double StageProgressPctD = 0.0;
+    Json->TryGetNumberField(TEXT("stage_progress_pct"), StageProgressPctD);
+    int32 StageProgressPct = static_cast<int32>(StageProgressPctD);
+
+    double StageProgressTokensD = 0.0;
+    Json->TryGetNumberField(TEXT("stage_progress_tokens"), StageProgressTokensD);
+    int32 StageProgressTokens = static_cast<int32>(StageProgressTokensD);
+
+    FString StageProgressName;
+    Json->TryGetStringField(TEXT("stage_progress_stage"), StageProgressName);
+
+    LastStageProgressPct = StageProgressPct;
+
     // Fix 2.6: Ensure delegate broadcasts execute on the game thread
     // HTTP callbacks may fire off-thread in some UE5 configurations.
     // Fix: Use weak pointer to prevent crash if EventPoller is destroyed mid-callback
     TWeakObjectPtr<UHJEventPoller> WeakThis(this);
 
-    auto BroadcastAndUpdateProgress = [WeakThis, ProjectId, Stage, StageIndex, TotalStages, bActive]()
+    auto BroadcastAndUpdateProgress = [WeakThis, ProjectId, Stage, StageIndex, TotalStages, bActive, StageProgressPct, StageProgressTokens, StageProgressName]()
     {
         UHJEventPoller* Self = WeakThis.Get();
         if (!Self) return;
 
         Self->OnPipelineStatus.Broadcast(ProjectId, Stage, StageIndex, bActive);
+
+        // Broadcast intra-stage progress if present
+        if (StageProgressPct > 0 && bActive)
+        {
+            Self->OnStageProgress.Broadcast(StageProgressName, StageProgressPct, StageProgressTokens);
+
+            // Update forge building QueueProgressPct with sub-progress value
+            // This gives smooth progress within a stage instead of jumping between stages
+        }
 
         // Fix 1.2: Update loading widget with pipeline progress
         if (bActive)

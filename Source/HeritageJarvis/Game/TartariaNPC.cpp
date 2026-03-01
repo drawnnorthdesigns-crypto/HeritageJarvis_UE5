@@ -5,6 +5,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Components/PointLightComponent.h"
+#include "Components/WidgetComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Dom/JsonObject.h"
@@ -14,7 +15,12 @@
 #include "Serialization/JsonSerializer.h"
 #include "Async/Async.h"
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "GameFramework/Character.h"
+#include "Blueprint/UserWidget.h"
+#include "Components/TextBlock.h"
+#include "Components/Border.h"
+#include "TimerManager.h"
 
 ATartariaNPC::ATartariaNPC()
 {
@@ -110,6 +116,15 @@ ATartariaNPC::ATartariaNPC()
 	ReputationAura->SetAttenuationRadius(150.f);
 	ReputationAura->SetLightColor(FLinearColor(0.5f, 0.5f, 0.5f));  // Default grey (STRANGER)
 	ReputationAura->SetCastShadows(false);
+
+	// ── Speech Bubble (UWidgetComponent — Screen space, faces camera) ──
+	SpeechBubble = CreateDefaultSubobject<UWidgetComponent>(TEXT("SpeechBubble"));
+	SpeechBubble->SetupAttachment(RootComponent);
+	SpeechBubble->SetRelativeLocation(FVector(0.f, 0.f, 140.f));  // Above name tag
+	SpeechBubble->SetDrawSize(FVector2D(300.f, 100.f));
+	SpeechBubble->SetWidgetSpace(EWidgetSpace::Screen);
+	SpeechBubble->SetVisibility(false);  // Hidden until ShowSpeechBubble()
+	SpeechBubble->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
 
 void ATartariaNPC::BeginPlay()
@@ -119,6 +134,47 @@ void ATartariaNPC::BeginPlay()
 	// Apply specialist-specific colors and spawn accessory now that
 	// SpecialistType has been set by the editor or WorldPopulator.
 	ApplySpecialistAppearance();
+
+	// Initialize emissive dynamic materials on all body meshes
+	InitBodyEmissiveMaterials();
+
+	// ── Programmatic Speech Bubble Widget ─────────────────────
+	// Create a UUserWidget at runtime with a styled text block
+	if (SpeechBubble)
+	{
+		UWorld* World = GetWorld();
+		APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+		if (PC)
+		{
+			UUserWidget* BubbleWidget = CreateWidget<UUserWidget>(PC);
+			if (BubbleWidget)
+			{
+				// Create a border for background styling
+				UBorder* BubbleBorder = NewObject<UBorder>(BubbleWidget);
+				BubbleBorder->SetBrushColor(FLinearColor(0.05f, 0.04f, 0.03f, 0.85f));  // Dark parchment
+				BubbleBorder->SetPadding(FMargin(12.f, 8.f, 12.f, 8.f));
+
+				// Create the text block inside the border
+				SpeechTextBlock = NewObject<UTextBlock>(BubbleWidget);
+				SpeechTextBlock->SetText(FText::GetEmpty());
+				SpeechTextBlock->SetColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.85f, 0.7f)));  // Warm gold text
+
+				FSlateFontInfo FontInfo = SpeechTextBlock->GetFont();
+				FontInfo.Size = 14;
+				SpeechTextBlock->SetFont(FontInfo);
+
+				SpeechTextBlock->SetAutoWrapText(true);
+
+				// Assemble: border contains text block
+				BubbleBorder->AddChild(SpeechTextBlock);
+
+				// Set the border as the root widget of the UUserWidget
+				BubbleWidget->SetRootWidget(BubbleBorder);
+
+				SpeechBubble->SetWidget(BubbleWidget);
+			}
+		}
+	}
 
 	// Spawn environmental workshop props around the NPC
 	SpawnWorkshopProps();
@@ -399,6 +455,21 @@ void ATartariaNPC::Tick(float DeltaTime)
 		// +/- 20% intensity oscillation
 		float PulseFactor = 1.0f + FMath::Sin(AuraPulsePhase) * 0.2f;
 		ReputationAura->SetIntensity(ReputationBaseIntensity * PulseFactor);
+	}
+
+	// ── Billboard: NameTag faces player camera ──
+	if (NameTag)
+	{
+		APlayerController* PC = GetWorld()->GetFirstPlayerController();
+		if (PC)
+		{
+			FVector CamLoc;
+			FRotator CamRot;
+			PC->GetPlayerViewPoint(CamLoc, CamRot);
+			FRotator LookAt = UKismetMathLibrary::FindLookAtRotation(
+				NameTag->GetComponentLocation(), CamLoc);
+			NameTag->SetWorldRotation(LookAt);
+		}
 	}
 }
 
@@ -763,6 +834,9 @@ void ATartariaNPC::SetReputationFromScore(int32 Score)
 		ReputationTier = 0;  // STRANGER
 
 	ApplyReputationAuraVisuals();
+
+	// Update emissive glow on body meshes to match reputation
+	UpdateReputationGlow(Score);
 }
 
 void ATartariaNPC::ApplyReputationAuraVisuals()
@@ -778,6 +852,124 @@ void ATartariaNPC::ApplyReputationAuraVisuals()
 	// Scale attenuation radius with tier for more visible auras at higher tiers
 	float Radius = 100.f + ReputationTier * 30.f;
 	ReputationAura->SetAttenuationRadius(Radius);
+}
+
+// -------------------------------------------------------
+// Emissive Reputation Glow
+// -------------------------------------------------------
+
+void ATartariaNPC::InitBodyEmissiveMaterials()
+{
+	// Collect all body mesh components that should receive the emissive glow
+	TArray<UStaticMeshComponent*> BodyMeshes = {
+		BodyTorso, BodyHead, BodyArmL, BodyArmR, BodyLegL, BodyLegR
+	};
+
+	BodyDynamicMaterials.Empty();
+
+	for (UStaticMeshComponent* Mesh : BodyMeshes)
+	{
+		if (!Mesh) continue;
+
+		// Get the existing dynamic material (created by ApplyColorToMesh in ApplySpecialistAppearance)
+		// or create a new one if it does not exist yet
+		UMaterialInstanceDynamic* DynMat = Cast<UMaterialInstanceDynamic>(Mesh->GetMaterial(0));
+		if (!DynMat)
+		{
+			DynMat = Mesh->CreateAndSetMaterialInstanceDynamic(0);
+		}
+
+		if (DynMat)
+		{
+			// Initialize with dim grey emissive (STRANGER tier)
+			DynMat->SetVectorParameterValue(TEXT("EmissiveColor"), FLinearColor(0.1f, 0.1f, 0.1f) * EmissiveStrength);
+			BodyDynamicMaterials.Add(DynMat);
+		}
+	}
+}
+
+FLinearColor ATartariaNPC::GetEmissiveTierColor(int32 Score)
+{
+	Score = FMath::Clamp(Score, 0, 100);
+
+	if (Score >= 80)
+		return FLinearColor(1.0f, 0.8f, 0.2f);    // TRUSTED — bright gold
+	else if (Score >= 60)
+		return FLinearColor(0.6f, 0.45f, 0.1f);    // FRIENDLY — warm gold
+	else if (Score >= 40)
+		return FLinearColor(0.3f, 0.3f, 0.3f);     // NEUTRAL — soft white
+	else if (Score >= 20)
+		return FLinearColor(0.1f, 0.1f, 0.3f);     // CAUTIOUS — faint blue
+	else
+		return FLinearColor(0.1f, 0.1f, 0.1f);     // STRANGER — dim grey
+}
+
+void ATartariaNPC::UpdateReputationGlow(int32 ReputationScore)
+{
+	FLinearColor TierColor = GetEmissiveTierColor(ReputationScore);
+	FLinearColor EmissiveValue = TierColor * EmissiveStrength;
+
+	for (UMaterialInstanceDynamic* DynMat : BodyDynamicMaterials)
+	{
+		if (DynMat)
+		{
+			DynMat->SetVectorParameterValue(TEXT("EmissiveColor"), EmissiveValue);
+		}
+	}
+}
+
+// -------------------------------------------------------
+// Speech Bubble
+// -------------------------------------------------------
+
+void ATartariaNPC::ShowSpeechBubble(const FString& Text, float Duration)
+{
+	CurrentSpeechText = Text;
+
+	// Update the text block content
+	if (SpeechTextBlock)
+	{
+		// Truncate to 80 characters for readability
+		FString DisplayText = Text.Len() > 80 ? Text.Left(77) + TEXT("...") : Text;
+		SpeechTextBlock->SetText(FText::FromString(DisplayText));
+	}
+
+	// Show the widget
+	if (SpeechBubble)
+	{
+		SpeechBubble->SetVisibility(true);
+	}
+
+	// Clear any existing hide timer and set a new one
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		World->GetTimerManager().ClearTimer(SpeechTimerHandle);
+		World->GetTimerManager().SetTimer(
+			SpeechTimerHandle,
+			this,
+			&ATartariaNPC::HideSpeechBubble,
+			Duration,
+			false  // non-looping
+		);
+	}
+}
+
+void ATartariaNPC::HideSpeechBubble()
+{
+	CurrentSpeechText.Empty();
+
+	if (SpeechBubble)
+	{
+		SpeechBubble->SetVisibility(false);
+	}
+
+	// Clear the timer in case this was called manually
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		World->GetTimerManager().ClearTimer(SpeechTimerHandle);
+	}
 }
 
 void ATartariaNPC::FetchReputationTier()
@@ -1261,6 +1453,28 @@ void ATartariaNPC::SendDialogueRequest(APlayerController* Interactor, const FStr
 							S->OnDialogueReceivedDelegate.Broadcast(
 								S->NPCName, Response, Actions);
 							S->OnDialogueResponse(Response);
+
+							// Show speech bubble with first sentence (or truncated)
+							{
+								FString BubbleText = Response;
+								// Extract first sentence (up to first period, exclamation, or question mark)
+								int32 SentenceEnd = -1;
+								for (int32 i = 0; i < BubbleText.Len(); ++i)
+								{
+									TCHAR Ch = BubbleText[i];
+									if (Ch == TEXT('.') || Ch == TEXT('!') || Ch == TEXT('?'))
+									{
+										SentenceEnd = i + 1;
+										break;
+									}
+								}
+								if (SentenceEnd > 0 && SentenceEnd < BubbleText.Len())
+								{
+									BubbleText = BubbleText.Left(SentenceEnd);
+								}
+								// ShowSpeechBubble handles the 80-char truncation internally
+								S->ShowSpeechBubble(BubbleText, 5.f);
+							}
 
 							// Trigger action gesture based on available actions
 							if (Actions.Num() > 0)

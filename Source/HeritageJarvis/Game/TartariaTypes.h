@@ -103,6 +103,38 @@ enum class ETartariaPhysicalMaterial : uint8
 	Water    UMETA(DisplayName = "Water")
 };
 
+/**
+ * Biome ambient audio profile (Task #215).
+ * Describes the tonal characteristics for each biome zone's ambient loop.
+ * TartariaSoundManager uses these to configure UAudioComponents with
+ * biome-specific pitch, volume, rhythm (LFO-like oscillation), and reverb.
+ */
+USTRUCT(BlueprintType)
+struct FBiomeAudioProfile
+{
+	GENERATED_BODY()
+
+	/** Fundamental frequency of the ambient tone (Hz). Maps to pitch multiplier. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	float BaseFrequencyHz = 80.f;
+
+	/** Oscillation frequency (Hz) for rhythmic volume modulation. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	float RhythmHz = 1.f;
+
+	/** Base volume of the ambient loop (0-1). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	float Volume = 0.5f;
+
+	/** Reverb decay time (seconds). Longer = more cavernous. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	float ReverbDecay = 1.5f;
+
+	/** Depth of rhythmic volume oscillation (0 = steady, 1 = full swing). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	float RhythmDepth = 0.3f;
+};
+
 /** Audio profile describing how a physical material sounds on impact. */
 USTRUCT(BlueprintType)
 struct FMaterialAudioProfile

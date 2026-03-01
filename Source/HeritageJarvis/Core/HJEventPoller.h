@@ -35,6 +35,13 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
     const FString&, Message
 );
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+    FOnStageProgress,
+    const FString&, StageName,
+    int32, Percent,
+    int32, TokensGenerated
+);
+
 UCLASS(BlueprintType, Blueprintable)
 class HERITAGEJARVIS_API UHJEventPoller : public UObject
 {
@@ -64,6 +71,10 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "HJ|Polling")
     FOnHealthStatus OnHealthStatus;
 
+    /** Fires when intra-stage token progress is reported */
+    UPROPERTY(BlueprintAssignable, Category = "HJ|Polling")
+    FOnStageProgress OnStageProgress;
+
     // -------------------------------------------------------
     // Last known state (read by HJDebugWidget)
     // -------------------------------------------------------
@@ -73,6 +84,10 @@ public:
 
     UPROPERTY(BlueprintReadOnly, Category = "HJ|Polling")
     bool bLastKnownActive = false;
+
+    /** Last known intra-stage progress percent (0-95) */
+    UPROPERTY(BlueprintReadOnly, Category = "HJ|Polling")
+    int32 LastStageProgressPct = 0;
 
     // -------------------------------------------------------
     // Control

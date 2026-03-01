@@ -12,6 +12,7 @@ class UPointLightComponent;
 class ATartariaWarpEffect;
 class UProceduralMeshComponent;
 class UBoxComponent;
+class UBodySetup;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnFootstep, bool, bSprinting);
 
@@ -379,6 +380,17 @@ private:
 
 	/** Fetch combat stats from backend and apply to weapon hitbox (Task #203). */
 	void FetchAndApplyWeaponCombatStats(const FString& WeaponId);
+
+	/** Convex hull collision body for weapon (Task #218).
+	 *  Built from simplified convex hull vertices sent by the Python backend.
+	 *  Used for more accurate hit detection than the axis-aligned box. */
+	UPROPERTY()
+	UBodySetup* WeaponConvexBody = nullptr;
+
+	/** Build convex collision from hull vertices (Task #218).
+	 *  Converts vertices from Python mm Y-up to UE5 cm Z-up coordinate system.
+	 *  @param HullVertices Array of hull vertex positions in Python coordinate space (mm, Y-up). */
+	void BuildWeaponConvexHull(const TArray<FVector>& HullVertices);
 
 	/** Helper: create and attach a primitive mesh sub-component. */
 	UStaticMeshComponent* CreateAvatarPart(const FName& Name, const TCHAR* ShapePath,

@@ -4,6 +4,7 @@
 #include "TartariaEnemyActor.h"
 #include "TartariaBiomeVolume.h"
 #include "TartariaForgeBuilding.h"
+#include "TartariaNPC.h"
 #include "Core/HJGameInstance.h"
 #include "Core/HJApiClient.h"
 #include "Core/HJWebSocketClient.h"
@@ -95,19 +96,13 @@ void UTartariaWorldSubsystem::Tick(float DeltaTime)
 		return;
 	}
 
-	// Fallback: poll-based updates when SSE is not connected
+	// Task #210: Single batch snapshot replaces 4 separate polls
+	// (world_state, inventory, strategic, consequences all in one call)
 	SyncTimer += DeltaTime;
 	if (SyncTimer >= SyncIntervalSec)
 	{
 		SyncTimer = 0.f;
-		SyncWithBackend();
-	}
-
-	InventoryTimer += DeltaTime;
-	if (InventoryTimer >= InventoryPollSec)
-	{
-		InventoryTimer = 0.f;
-		PollInventory();
+		SyncWithBackend();  // Now calls /api/game/snapshot
 	}
 
 	TickTimer += DeltaTime;
@@ -116,20 +111,6 @@ void UTartariaWorldSubsystem::Tick(float DeltaTime)
 		TickTimer = 0.f;
 		ExecuteGameTick();
 	}
-
-	StrategicTimer += DeltaTime;
-	if (StrategicTimer >= StrategicPollSec)
-	{
-		StrategicTimer = 0.f;
-		PollStrategicStatus();
-	}
-
-	ConsequencePollTimer += DeltaTime;
-	if (ConsequencePollTimer >= ConsequencePollSec)
-	{
-		ConsequencePollTimer = 0.f;
-		PollWorldConsequences();
-	}
 }
 
 void UTartariaWorldSubsystem::SyncWithBackend()
@@ -137,11 +118,295 @@ void UTartariaWorldSubsystem::SyncWithBackend()
 	UHJGameInstance* GI = UHJGameInstance::Get(GetWorld());
 	if (!GI || !GI->ApiClient) return;
 
+	// Task #210: Use batch snapshot endpoint instead of individual polls
 	FOnApiResponse CB;
-	CB.BindUObject(this, &UTartariaWorldSubsystem::OnWorldStateResponse);
-	GI->ApiClient->GetWorldState(CB);
+	CB.BindUObject(this, &UTartariaWorldSubsystem::OnSnapshotResponse);
+	GI->ApiClient->Get(TEXT("/api/game/snapshot"), CB);
 }
 
+void UTartariaWorldSubsystem::OnSnapshotResponse(bool bSuccess, const FString& Body)
+{
+	if (!bSuccess)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TartariaWorldSubsystem: Snapshot sync failed"));
+		return;
+	}
+
+	ParseSnapshot(Body);
+}
+
+void UTartariaWorldSubsystem::ParseSnapshot(const FString& JsonBody)
+{
+	TSharedPtr<FJsonObject> Root;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonBody);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid()) return;
+
+	// ── world_state section ──
+	const TSharedPtr<FJsonObject>* WorldObj;
+	if (Root->TryGetObjectField(TEXT("world_state"), WorldObj))
+	{
+		ParseWorldStateSection(*WorldObj);
+	}
+
+	// ── inventory section ──
+	const TSharedPtr<FJsonObject>* InvObj;
+	if (Root->TryGetObjectField(TEXT("inventory"), InvObj))
+	{
+		ParseInventorySection(*InvObj);
+	}
+
+	// ── npc_profiles section ──
+	const TSharedPtr<FJsonObject>* NPCObj;
+	if (Root->TryGetObjectField(TEXT("npc_profiles"), NPCObj))
+	{
+		ParseNPCProfilesSection(*NPCObj);
+	}
+
+	// ── consequences section ──
+	const TSharedPtr<FJsonObject>* ConsObj;
+	if (Root->TryGetObjectField(TEXT("consequences"), ConsObj))
+	{
+		ParseConsequencesSection(*ConsObj);
+	}
+
+	// ── queue_status section ──
+	const TSharedPtr<FJsonObject>* QueueObj;
+	if (Root->TryGetObjectField(TEXT("queue_status"), QueueObj))
+	{
+		ParseQueueStatusSection(*QueueObj);
+	}
+
+	// ── economy section ──
+	const TSharedPtr<FJsonObject>* EconObj;
+	if (Root->TryGetObjectField(TEXT("economy"), EconObj))
+	{
+		ParseEconomySection(*EconObj);
+	}
+
+	OnGameStateUpdated.Broadcast();
+
+	UE_LOG(LogTemp, Log, TEXT("TartariaWorldSubsystem: Snapshot synced — Era=%s, Day=%d, POIs=%d, Credits=%d, NPCs=%d, QueueLen=%d"),
+		*CurrentEra, CurrentDay, ActivePOIs.Num(), Credits, NPCProfileTitles.Num(), ForgeQueueLength);
+}
+
+void UTartariaWorldSubsystem::ParseWorldStateSection(const TSharedPtr<FJsonObject>& WorldObj)
+{
+	if (!WorldObj.IsValid()) return;
+
+	// Parse era
+	WorldObj->TryGetStringField(TEXT("era"), CurrentEra);
+
+	// Parse temporal clock
+	const TSharedPtr<FJsonObject>* ClockObj;
+	if (WorldObj->TryGetObjectField(TEXT("temporal_clock"), ClockObj))
+	{
+		double Tod = 8.0;
+		if ((*ClockObj)->TryGetNumberField(TEXT("time_of_day"), Tod))
+			TimeOfDay = static_cast<float>(Tod);
+
+		int32 Day = 1;
+		(*ClockObj)->TryGetNumberField(TEXT("current_day"), Day);
+		CurrentDay = Day;
+	}
+
+	// Parse active events/threats as POIs
+	const TArray<TSharedPtr<FJsonValue>>* EventsArr;
+	if (WorldObj->TryGetArrayField(TEXT("active_events"), EventsArr))
+	{
+		ActivePOIs.Empty();
+		for (const TSharedPtr<FJsonValue>& Val : *EventsArr)
+		{
+			const TSharedPtr<FJsonObject>& Obj = Val->AsObject();
+			if (!Obj.IsValid()) continue;
+
+			FTartariaPOI POI;
+			Obj->TryGetStringField(TEXT("id"), POI.POIId);
+			Obj->TryGetStringField(TEXT("type"), POI.POIType);
+			Obj->TryGetStringField(TEXT("biome"), POI.BiomeKey);
+			Obj->TryGetStringField(TEXT("name"), POI.DisplayName);
+			POI.bActive = true;
+
+			double X = 0, Y = 0, Z = 0;
+			const TSharedPtr<FJsonObject>* LocObj;
+			if (Obj->TryGetObjectField(TEXT("location"), LocObj))
+			{
+				(*LocObj)->TryGetNumberField(TEXT("x"), X);
+				(*LocObj)->TryGetNumberField(TEXT("y"), Y);
+				(*LocObj)->TryGetNumberField(TEXT("z"), Z);
+			}
+			POI.WorldLocation = FVector(X, Y, Z);
+
+			ActivePOIs.Add(POI);
+		}
+	}
+
+	// Parse credits
+	double Cr = 0;
+	if (WorldObj->TryGetNumberField(TEXT("credits"), Cr))
+		Credits = static_cast<int32>(Cr);
+
+	// Parse phase
+	WorldObj->TryGetStringField(TEXT("phase"), Phase);
+
+	// Parse factions
+	const TSharedPtr<FJsonObject>* FactionsObj;
+	if (WorldObj->TryGetObjectField(TEXT("factions"), FactionsObj))
+	{
+		Factions.Empty();
+		for (const auto& Pair : (*FactionsObj)->Values)
+		{
+			const TSharedPtr<FJsonObject>* FObj;
+			if (Pair.Value->TryGetObject(FObj))
+			{
+				FTartariaFactionInfo Info;
+				Info.FactionKey = Pair.Key;
+				double Inf = 0;
+				(*FObj)->TryGetNumberField(TEXT("influence"), Inf);
+				Info.Influence = static_cast<float>(Inf);
+				(*FObj)->TryGetStringField(TEXT("domain"), Info.Domain);
+				Factions.Add(Info);
+			}
+		}
+	}
+
+	// Push live credit balance to vault actors
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		for (TActorIterator<ATartariaInstancedWealth> It(World); It; ++It)
+		{
+			ATartariaInstancedWealth* Vault = *It;
+			if (Vault)
+			{
+				Vault->UpdateFromWorldState(Credits);
+			}
+		}
+	}
+}
+
+void UTartariaWorldSubsystem::ParseInventorySection(const TSharedPtr<FJsonObject>& InvObj)
+{
+	if (!InvObj.IsValid()) return;
+
+	const TArray<TSharedPtr<FJsonValue>>* ItemsArr;
+	if (InvObj->TryGetArrayField(TEXT("items"), ItemsArr))
+	{
+		Inventory.Empty();
+		for (const TSharedPtr<FJsonValue>& Val : *ItemsArr)
+		{
+			const TSharedPtr<FJsonObject>& Obj = Val->AsObject();
+			if (!Obj.IsValid()) continue;
+
+			FTartariaInventoryItem Item;
+			Obj->TryGetStringField(TEXT("item_id"), Item.ItemId);
+
+			double Qty = 0;
+			Obj->TryGetNumberField(TEXT("quantity"), Qty);
+			Item.Quantity = static_cast<int32>(Qty);
+
+			Obj->TryGetBoolField(TEXT("equipped"), Item.bEquipped);
+			Inventory.Add(Item);
+		}
+	}
+}
+
+void UTartariaWorldSubsystem::ParseNPCProfilesSection(const TSharedPtr<FJsonObject>& NPCObj)
+{
+	if (!NPCObj.IsValid()) return;
+
+	NPCProfileTitles.Empty();
+	for (const auto& Pair : NPCObj->Values)
+	{
+		const TSharedPtr<FJsonObject>* ProfileObj;
+		if (Pair.Value->TryGetObject(ProfileObj))
+		{
+			FString Title;
+			(*ProfileObj)->TryGetStringField(TEXT("title"), Title);
+			NPCProfileTitles.Add(Pair.Key, Title);
+
+			// Push profile data to NPC actors in the world
+			UWorld* World = GetWorld();
+			if (World)
+			{
+				for (TActorIterator<ATartariaNPC> It(World); It; ++It)
+				{
+					ATartariaNPC* NPC = *It;
+					if (NPC && NPC->GetSpecialistString() == Pair.Key)
+					{
+						NPC->NPCName = Title;
+						if (NPC->NameTag)
+						{
+							NPC->NameTag->SetText(FText::FromString(Title));
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+void UTartariaWorldSubsystem::ParseConsequencesSection(const TSharedPtr<FJsonObject>& ConsObj)
+{
+	if (!ConsObj.IsValid()) return;
+
+	// Extract visual_modifiers sub-object and apply to biome volumes
+	const TSharedPtr<FJsonObject>* VisModsObj;
+	if (ConsObj->TryGetObjectField(TEXT("visual_modifiers"), VisModsObj))
+	{
+		ApplyZoneVisualModifiers(*VisModsObj);
+	}
+}
+
+void UTartariaWorldSubsystem::ParseQueueStatusSection(const TSharedPtr<FJsonObject>& QueueObj)
+{
+	if (!QueueObj.IsValid()) return;
+
+	double QL = 0;
+	QueueObj->TryGetNumberField(TEXT("queue_length"), QL);
+	ForgeQueueLength = static_cast<int32>(QL);
+
+	const TSharedPtr<FJsonObject>* ActiveJobObj;
+	if (QueueObj->TryGetObjectField(TEXT("active_job"), ActiveJobObj))
+	{
+		bForgeJobActive = true;
+		double Prog = 0;
+		(*ActiveJobObj)->TryGetNumberField(TEXT("progress_pct"), Prog);
+		ForgeJobProgress = static_cast<int32>(Prog);
+
+		// Update forge building actors with queue activity
+		UWorld* World = GetWorld();
+		if (World)
+		{
+			for (TActorIterator<ATartariaForgeBuilding> It(World); It; ++It)
+			{
+				ATartariaForgeBuilding* Forge = *It;
+				if (Forge)
+				{
+					Forge->SetProductionActive(true);
+				}
+			}
+		}
+	}
+	else
+	{
+		bForgeJobActive = false;
+		ForgeJobProgress = 0;
+	}
+}
+
+void UTartariaWorldSubsystem::ParseEconomySection(const TSharedPtr<FJsonObject>& EconObj)
+{
+	if (!EconObj.IsValid()) return;
+
+	// Economy credits (may override world_state credits — use latest)
+	double EconCredits = 0;
+	if (EconObj->TryGetNumberField(TEXT("credits"), EconCredits))
+	{
+		Credits = static_cast<int32>(EconCredits);
+	}
+}
+
+// Legacy handler — kept for SSE push path compatibility
 void UTartariaWorldSubsystem::OnWorldStateResponse(bool bSuccess, const FString& Body)
 {
 	if (!bSuccess)

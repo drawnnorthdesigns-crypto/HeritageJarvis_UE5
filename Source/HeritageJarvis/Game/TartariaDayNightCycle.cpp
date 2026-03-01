@@ -61,13 +61,40 @@ void ATartariaDayNightCycle::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// Advance time of day
-	float HoursPerSecond = 24.f / DayLengthSeconds;
-	TimeOfDay += HoursPerSecond * DeltaTime;
+	// Forced sunrise override — advance time rapidly toward dawn
+	if (bForcingSunrise)
+	{
+		TimeOfDay += ForceSunriseSpeed * DeltaTime;
 
-	// Wrap at 24
-	if (TimeOfDay >= 24.f)
-		TimeOfDay -= 24.f;
+		// Wrap at 24
+		if (TimeOfDay >= 24.f)
+			TimeOfDay -= 24.f;
+
+		// Check if we've reached the target sunrise angle
+		// Target is 6.0h (sunrise). Allow a small tolerance.
+		float Delta = ForceSunriseTarget - TimeOfDay;
+		// Handle wrap-around (e.g., advancing from 23h toward 6h)
+		if (Delta < -12.f) Delta += 24.f;
+		if (Delta > 12.f) Delta -= 24.f;
+
+		if (FMath::Abs(Delta) < 0.1f)
+		{
+			TimeOfDay = ForceSunriseTarget;
+			bForcingSunrise = false;
+			ForceSunriseSpeed = 0.f;
+			UE_LOG(LogTemp, Log, TEXT("TartariaDayNightCycle: Forced sunrise complete — TimeOfDay=%.1f"), TimeOfDay);
+		}
+	}
+	else
+	{
+		// Normal time advancement
+		float HoursPerSecond = 24.f / DayLengthSeconds;
+		TimeOfDay += HoursPerSecond * DeltaTime;
+
+		// Wrap at 24
+		if (TimeOfDay >= 24.f)
+			TimeOfDay -= 24.f;
+	}
 
 	// Night check (20:00 - 05:00)
 	bIsNight = (TimeOfDay >= 20.f || TimeOfDay < 5.f);
@@ -499,4 +526,37 @@ void ATartariaDayNightCycle::UpdateWeather(float DeltaTime)
 float ATartariaDayNightCycle::GetWeatherFogMultiplier() const
 {
 	return 1.0f + WeatherIntensity * 3.0f;
+}
+
+// -------------------------------------------------------
+// Forced Sunrise (Dawn Ceremony)
+// -------------------------------------------------------
+
+void ATartariaDayNightCycle::ForceSunrise(float Duration)
+{
+	if (bForcingSunrise)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TartariaDayNightCycle: ForceSunrise already in progress"));
+		return;
+	}
+
+	Duration = FMath::Max(Duration, 1.f);
+
+	// Calculate how many hours we need to advance to reach dawn (6.0h)
+	float HoursToAdvance = ForceSunriseTarget - TimeOfDay;
+	if (HoursToAdvance <= 0.f)
+		HoursToAdvance += 24.f;
+
+	// If we're already very close to sunrise, still do a brief dramatic sweep
+	if (HoursToAdvance < 0.5f)
+		HoursToAdvance = 0.5f;
+
+	ForceSunriseSpeed = HoursToAdvance / Duration;
+	bForcingSunrise = true;
+
+	// Force clear weather for the dawn ceremony
+	SetWeather(TEXT("Clear"), 3.0f);
+
+	UE_LOG(LogTemp, Log, TEXT("TartariaDayNightCycle: ForceSunrise — %.1f hours to advance over %.1fs (speed=%.2f h/s)"),
+		HoursToAdvance, Duration, ForceSunriseSpeed);
 }

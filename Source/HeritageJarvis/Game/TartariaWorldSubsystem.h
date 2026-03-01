@@ -133,7 +133,49 @@ public:
 	/** Apply visual modifiers to biome volumes. */
 	void ApplyZoneVisualModifiers(const TSharedPtr<FJsonObject>& ModifiersJson);
 
+	// -------------------------------------------------------
+	// Batch Snapshot (Task #210)
+	// -------------------------------------------------------
+
+	/** NPC profile data parsed from batch snapshot. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|NPC")
+	TMap<FString, FString> NPCProfileTitles;
+
+	/** Forge queue length from batch snapshot. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Queue")
+	int32 ForgeQueueLength = 0;
+
+	/** Whether a forge job is actively running. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Queue")
+	bool bForgeJobActive = false;
+
+	/** Active forge job progress (0-100). */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Queue")
+	int32 ForgeJobProgress = 0;
+
 private:
+	void OnSnapshotResponse(bool bSuccess, const FString& Body);
+	void ParseSnapshot(const FString& JsonBody);
+
+	/** Parse the world_state section from a snapshot response. */
+	void ParseWorldStateSection(const TSharedPtr<FJsonObject>& WorldObj);
+
+	/** Parse the inventory section from a snapshot response. */
+	void ParseInventorySection(const TSharedPtr<FJsonObject>& InvObj);
+
+	/** Parse the npc_profiles section from a snapshot response. */
+	void ParseNPCProfilesSection(const TSharedPtr<FJsonObject>& NPCObj);
+
+	/** Parse the consequences section from a snapshot response. */
+	void ParseConsequencesSection(const TSharedPtr<FJsonObject>& ConsObj);
+
+	/** Parse the queue_status section from a snapshot response. */
+	void ParseQueueStatusSection(const TSharedPtr<FJsonObject>& QueueObj);
+
+	/** Parse the economy section from a snapshot response. */
+	void ParseEconomySection(const TSharedPtr<FJsonObject>& EconObj);
+
+	// Legacy parse methods (still used by SSE push path)
 	void OnWorldStateResponse(bool bSuccess, const FString& Body);
 	void ParseWorldState(const FString& JsonBody);
 

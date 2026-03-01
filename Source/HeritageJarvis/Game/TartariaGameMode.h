@@ -20,6 +20,7 @@ class ATartariaNPC;
 class ATartariaSolarSystemManager;
 class ATartariaQuestMarker;
 class ATartariaLevelStreamManager;
+class ATartariaDayNightCycle;
 
 /** Delegate broadcast when a pipeline project completes materialization. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectCompleted, const FString&, ProjectId);
@@ -221,4 +222,31 @@ private:
 
 	UFUNCTION()
 	void OnSSETickEvents(const TArray<FTartariaTickEvent>& Events);
+
+	// -------------------------------------------------------
+	// Dawn Ceremony — overnight forge queue completion
+	// -------------------------------------------------------
+
+	/** Tracks whether overnight forge queue had jobs on last snapshot. */
+	bool bOvernightQueueActive = false;
+
+	/** Number of completed jobs from last snapshot (for dawn subtitle). */
+	int32 LastCompletedJobCount = 0;
+
+	/** Check overnight status from world subsystem snapshot sync. */
+	void CheckOvernightStatus(bool bQueueActive, int32 QueueLength, int32 CompletedJobs);
+
+	/** Trigger the dawn ceremony with golden overlay, forced sunrise, and forge bursts. */
+	void TriggerDawnCeremony(int32 CompletedJobs);
+
+	/** Remove the dawn overlay widget. */
+	void RemoveDawnOverlay();
+
+	/** Dawn overlay widget (programmatic UMG). */
+	UPROPERTY()
+	UUserWidget* DawnOverlay = nullptr;
+
+	/** Timer handles for dawn ceremony lifecycle. */
+	FTimerHandle DawnFadeOutTimerHandle;
+	FTimerHandle DawnRemoveTimerHandle;
 };

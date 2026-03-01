@@ -29,6 +29,14 @@
 #include "TartariaSolarSystemManager.h"
 #include "TartariaLevelStreamManager.h"
 #include "TartariaRewardVFX.h"
+#include "TartariaDayNightCycle.h"
+#include "Components/Border.h"
+#include "Components/CanvasPanel.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Components/TextBlock.h"
+#include "Components/Overlay.h"
+#include "Components/OverlaySlot.h"
+#include "TimerManager.h"
 
 ATartariaGameMode::ATartariaGameMode()
 {
@@ -558,6 +566,26 @@ void ATartariaGameMode::OnGameStateUpdated()
 
 	// Push fleet/tech/mining data to HUD
 	HUDWidget->SetStrategicInfo(WorldSub->Fleet, WorldSub->Tech, WorldSub->Mining);
+
+	// ── Dawn Ceremony: Detect overnight forge queue completion ──
+	bool bQueueNowActive = WorldSub->bForgeJobActive || WorldSub->ForgeQueueLength > 0;
+
+	// Grab completed-today count from the first Forge building actor
+	int32 CompletedToday = 0;
+	UWorld* DawnWorld = GetWorld();
+	if (DawnWorld)
+	{
+		for (TActorIterator<ATartariaForgeBuilding> It(DawnWorld); It; ++It)
+		{
+			if ((*It)->BuildingType == ETartariaBuildingType::Forge)
+			{
+				CompletedToday = (*It)->QueueCompletedToday;
+				break;
+			}
+		}
+	}
+
+	CheckOvernightStatus(bQueueNowActive, WorldSub->ForgeQueueLength, CompletedToday);
 }
 
 void ATartariaGameMode::OnTickCompleted(const TArray<FTartariaTickEvent>& Events)
@@ -995,4 +1023,244 @@ void ATartariaGameMode::OnSSETickEvents(const TArray<FTartariaTickEvent>& Events
 {
 	// Reuse existing tick event handler
 	OnTickCompleted(Events);
+}
+
+// -------------------------------------------------------
+// Dawn Ceremony — overnight forge queue completion
+// -------------------------------------------------------
+
+void ATartariaGameMode::CheckOvernightStatus(bool bQueueActive, int32 QueueLength, int32 CompletedJobs)
+{
+	// Detect transition: queue was active -> now empty
+	if (bOvernightQueueActive && !bQueueActive && CompletedJobs > 0)
+	{
+		UE_LOG(LogTemp, Log,
+			TEXT("TartariaGameMode: Overnight forge queue completed — %d jobs finished"),
+			CompletedJobs);
+		TriggerDawnCeremony(CompletedJobs);
+	}
+
+	bOvernightQueueActive = bQueueActive;
+	LastCompletedJobCount = CompletedJobs;
+}
+
+void ATartariaGameMode::TriggerDawnCeremony(int32 CompletedJobs)
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (!PC) return;
+
+	// Prevent duplicate ceremonies
+	if (DawnOverlay != nullptr) return;
+
+	UE_LOG(LogTemp, Log, TEXT("TartariaGameMode: Triggering Dawn Ceremony — %d artifacts crystallized"), CompletedJobs);
+
+	// ── 1. Force sunrise on DayNightCycle ──
+	for (TActorIterator<ATartariaDayNightCycle> It(World); It; ++It)
+	{
+		ATartariaDayNightCycle* DNC = *It;
+		DNC->ForceSunrise(10.f);
+		break;
+	}
+
+	// ── 2. Trigger materialization burst on all Forge buildings ──
+	for (TActorIterator<ATartariaForgeBuilding> It(World); It; ++It)
+	{
+		ATartariaForgeBuilding* Forge = *It;
+		if (Forge->BuildingType == ETartariaBuildingType::Forge)
+		{
+			Forge->PlayMaterializationBurst();
+		}
+	}
+
+	// ── 3. Create programmatic UMG overlay ──
+	DawnOverlay = CreateWidget<UUserWidget>(PC);
+	if (!DawnOverlay) return;
+
+	DawnOverlay->AddToViewport(50); // Above HUD, below pause
+
+	// Build the widget tree programmatically:
+	// UOverlay -> UBorder (golden gradient bg) + text blocks
+
+	// Root canvas panel to fill the screen
+	UCanvasPanel* Canvas = NewObject<UCanvasPanel>(DawnOverlay);
+	DawnOverlay->WidgetTree->RootWidget = Canvas;
+
+	// Golden overlay background — full-screen border with semi-transparent gold
+	UBorder* GoldenBG = NewObject<UBorder>(Canvas);
+	GoldenBG->SetBrushColor(FLinearColor(0.85f, 0.65f, 0.1f, 0.6f)); // Golden, alpha 0.6
+	UCanvasPanelSlot* BGSlot = Canvas->AddChildToCanvas(GoldenBG);
+	if (BGSlot)
+	{
+		BGSlot->SetAnchors(FAnchors(0.f, 0.f, 1.f, 1.f));
+		BGSlot->SetOffsets(FMargin(0.f));
+	}
+
+	// Vertical layout for text — centered via an overlay
+	UOverlay* CenterOverlay = NewObject<UOverlay>(GoldenBG);
+	GoldenBG->SetContent(CenterOverlay);
+
+	// Title text: "THE DAWN FORGE IS COMPLETE"
+	UTextBlock* TitleText = NewObject<UTextBlock>(CenterOverlay);
+	TitleText->SetText(FText::FromString(TEXT("THE DAWN FORGE IS COMPLETE")));
+
+	FSlateFontInfo TitleFont = TitleText->GetFont();
+	TitleFont.Size = 36;
+	TitleText->SetFont(TitleFont);
+	TitleText->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.85f, 0.2f))); // Bright gold
+	TitleText->SetJustification(ETextJustify::Center);
+	TitleText->SetShadowOffset(FVector2D(2.f, 2.f));
+	TitleText->SetShadowColorAndOpacity(FLinearColor(0.f, 0.f, 0.f, 0.8f));
+
+	UOverlaySlot* TitleSlot = CenterOverlay->AddChildToOverlay(TitleText);
+	if (TitleSlot)
+	{
+		TitleSlot->SetHorizontalAlignment(HAlign_Center);
+		TitleSlot->SetVerticalAlignment(VAlign_Center);
+		TitleSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 40.f)); // Offset up slightly
+	}
+
+	// Subtitle text: "{N} artifacts crystallized"
+	UTextBlock* SubtitleText = NewObject<UTextBlock>(CenterOverlay);
+	FString SubtitleStr = FString::Printf(TEXT("%d artifact%s crystallized"),
+		CompletedJobs, CompletedJobs == 1 ? TEXT("") : TEXT("s"));
+	SubtitleText->SetText(FText::FromString(SubtitleStr));
+
+	FSlateFontInfo SubFont = SubtitleText->GetFont();
+	SubFont.Size = 20;
+	SubtitleText->SetFont(SubFont);
+	SubtitleText->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.95f, 0.7f))); // Pale gold
+	SubtitleText->SetJustification(ETextJustify::Center);
+	SubtitleText->SetShadowOffset(FVector2D(1.f, 1.f));
+	SubtitleText->SetShadowColorAndOpacity(FLinearColor(0.f, 0.f, 0.f, 0.6f));
+
+	UOverlaySlot* SubSlot = CenterOverlay->AddChildToOverlay(SubtitleText);
+	if (SubSlot)
+	{
+		SubSlot->SetHorizontalAlignment(HAlign_Center);
+		SubSlot->SetVerticalAlignment(VAlign_Center);
+		SubSlot->SetPadding(FMargin(0.f, 40.f, 0.f, 0.f)); // Offset down slightly
+	}
+
+	// ── 4. Fade in: Start at alpha 0, ramp to 1 over 1 second ──
+	DawnOverlay->SetRenderOpacity(0.f);
+
+	// Notify with toast
+	UHJNotificationWidget::Toast(
+		TEXT("The Dawn Forge has completed its work!"),
+		EHJNotifType::Success, 5.0f);
+
+	// ── 5. Timer-based lifecycle: fade in (1s), hold (4s), fade out (2s), remove ──
+	// Use a ticker for the fade-in since we need smooth per-frame updates
+	// Instead, we'll use a simple timer that sets opacity at key points
+
+	// After 0s: start fade in (handled by setting opacity to 0 above)
+	// We use a repeating timer for smooth fade-in over 1 second
+	TWeakObjectPtr<ATartariaGameMode> WeakThis(this);
+
+	// Fade-in: 1 second ramp from 0 to 1
+	// Use a 0.033s repeating timer (30fps) for smooth fade
+	FTimerHandle FadeInHandle;
+	FTimerDelegate FadeInDelegate;
+	FadeInDelegate.BindLambda([WeakThis]()
+	{
+		ATartariaGameMode* Self = WeakThis.Get();
+		if (!Self || !Self->DawnOverlay) return;
+
+		float CurrentOpacity = Self->DawnOverlay->GetRenderOpacity();
+		float NewOpacity = FMath::Min(CurrentOpacity + 0.033f, 1.0f); // ~1s fade at 30fps
+
+		Self->DawnOverlay->SetRenderOpacity(NewOpacity);
+
+		if (NewOpacity >= 1.0f)
+		{
+			// Fade-in complete — clear the repeating timer
+			UWorld* W = Self->GetWorld();
+			if (W)
+			{
+				// Timer will be auto-cleared when it's no longer needed
+			}
+		}
+	});
+	World->GetTimerManager().SetTimer(FadeInHandle, FadeInDelegate, 0.033f, true);
+
+	// After 1s: clear fade-in timer (ensure full opacity)
+	FTimerHandle ClearFadeInHandle;
+	FTimerDelegate ClearFadeInDelegate;
+	ClearFadeInDelegate.BindLambda([WeakThis, FadeInHandle]()
+	{
+		ATartariaGameMode* Self = WeakThis.Get();
+		if (!Self) return;
+		UWorld* W = Self->GetWorld();
+		if (W)
+		{
+			FTimerHandle MutableHandle = FadeInHandle;
+			W->GetTimerManager().ClearTimer(MutableHandle);
+		}
+		if (Self->DawnOverlay)
+			Self->DawnOverlay->SetRenderOpacity(1.0f);
+	});
+	World->GetTimerManager().SetTimer(ClearFadeInHandle, ClearFadeInDelegate, 1.0f, false);
+
+	// After 5s (1s fade-in + 4s hold): begin fade out over 2s
+	FTimerDelegate FadeOutDelegate;
+	FadeOutDelegate.BindLambda([WeakThis]()
+	{
+		ATartariaGameMode* Self = WeakThis.Get();
+		if (!Self || !Self->DawnOverlay) return;
+
+		UWorld* W = Self->GetWorld();
+		if (!W) return;
+
+		// Start a repeating timer for smooth fade-out over 2 seconds
+		FTimerHandle FadeOutTickHandle;
+		FTimerDelegate FadeOutTickDelegate;
+		TWeakObjectPtr<ATartariaGameMode> WeakSelf(Self);
+
+		FadeOutTickDelegate.BindLambda([WeakSelf]()
+		{
+			ATartariaGameMode* S = WeakSelf.Get();
+			if (!S || !S->DawnOverlay) return;
+
+			float CurrentOpacity = S->DawnOverlay->GetRenderOpacity();
+			float NewOpacity = FMath::Max(CurrentOpacity - 0.0165f, 0.0f); // ~2s fade at 30fps
+			S->DawnOverlay->SetRenderOpacity(NewOpacity);
+		});
+		W->GetTimerManager().SetTimer(FadeOutTickHandle, FadeOutTickDelegate, 0.033f, true);
+
+		// Store the fade-out tick handle so we can clear it on removal
+		Self->DawnFadeOutTimerHandle = FadeOutTickHandle;
+	});
+	World->GetTimerManager().SetTimer(DawnFadeOutTimerHandle, FadeOutDelegate, 5.0f, false);
+
+	// After 7s total: remove overlay
+	FTimerDelegate RemoveDelegate;
+	RemoveDelegate.BindLambda([WeakThis]()
+	{
+		ATartariaGameMode* Self = WeakThis.Get();
+		if (Self) Self->RemoveDawnOverlay();
+	});
+	World->GetTimerManager().SetTimer(DawnRemoveTimerHandle, RemoveDelegate, 7.0f, false);
+}
+
+void ATartariaGameMode::RemoveDawnOverlay()
+{
+	UWorld* World = GetWorld();
+
+	// Clear any active fade timers
+	if (World)
+	{
+		World->GetTimerManager().ClearTimer(DawnFadeOutTimerHandle);
+		World->GetTimerManager().ClearTimer(DawnRemoveTimerHandle);
+	}
+
+	if (DawnOverlay)
+	{
+		DawnOverlay->RemoveFromParent();
+		DawnOverlay = nullptr;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("TartariaGameMode: Dawn ceremony overlay removed"));
 }

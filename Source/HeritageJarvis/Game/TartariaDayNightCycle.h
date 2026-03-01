@@ -102,7 +102,23 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Weather")
 	void SetWeather(const FString& Weather, float TransitionTime = 5.0f);
 
+	// -------------------------------------------------------
+	// Forced Sunrise (Dawn Ceremony)
+	// -------------------------------------------------------
+
+	/** Force an accelerated sunrise over Duration seconds. */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|DayNight")
+	void ForceSunrise(float Duration = 10.f);
+
 private:
+	/** True while an accelerated sunrise is in progress. */
+	bool bForcingSunrise = false;
+
+	/** Speed (hours per second) to advance time during forced sunrise. */
+	float ForceSunriseSpeed = 0.f;
+
+	/** Target time of day for forced sunrise (dawn = 6.0h). */
+	float ForceSunriseTarget = 6.0f;
 	FString TargetWeather = TEXT("Clear");
 	float WeatherTransitionTimer = 0.0f;
 	float WeatherTransitionDuration = 5.0f;

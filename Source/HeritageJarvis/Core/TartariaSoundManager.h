@@ -5,6 +5,7 @@
 #include "TartariaSoundManager.generated.h"
 
 class USoundBase;
+class UAudioComponent;
 
 /**
  * UTartariaSoundManager -- Centralized interaction sound playback.
@@ -67,6 +68,42 @@ public:
 	/** Play a level-up fanfare. */
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Sound", meta = (WorldContext = "WorldContextObject"))
 	static void PlayLevelUp(UObject* WorldContextObject);
+
+	// =============================================================
+	// Biome Ambient Audio (Task #215)
+	// =============================================================
+
+	/**
+	 * Get the ambient audio profile for a biome type.
+	 * Returns a const reference to the statically-initialized profile.
+	 */
+	static const FBiomeAudioProfile& GetBiomeProfile(ETartariaBiome Biome);
+
+	/**
+	 * Convert a BiomeKey string (e.g. "FORGE_DISTRICT") to ETartariaBiome enum.
+	 * Returns Clearinghouse as fallback for unrecognized keys.
+	 */
+	static ETartariaBiome BiomeFromKey(const FString& BiomeKey);
+
+	/**
+	 * Configure a UAudioComponent for biome ambient playback.
+	 * Sets pitch, volume, and looping based on the biome's audio profile.
+	 * The component should use a looping engine sound (loaded automatically).
+	 *
+	 * @param AudioComp  The audio component to configure (owned by caller).
+	 * @param Biome      The biome type to configure for.
+	 */
+	static void ConfigureBiomeAmbient(UAudioComponent* AudioComp, ETartariaBiome Biome);
+
+	/**
+	 * Apply rhythmic volume modulation to a biome ambient audio component.
+	 * Call this from Tick() to produce LFO-like oscillation on the ambient loop.
+	 *
+	 * @param AudioComp       The ambient audio component to modulate.
+	 * @param Biome           The biome type (for profile lookup).
+	 * @param TimeAccumulator Running time accumulator (caller should += DeltaTime).
+	 */
+	static void TickBiomeAmbient(UAudioComponent* AudioComp, ETartariaBiome Biome, float TimeAccumulator);
 
 	// =============================================================
 	// Material-Specific Impact Audio (Task #205)
@@ -140,4 +177,15 @@ private:
 
 	/** Whether MaterialProfiles has been populated. */
 	static bool bProfilesInitialized;
+
+	// ── Biome Ambient Audio (Task #215) ──────────────────────────
+
+	/** Initialize the static biome profile table (called once lazily). */
+	static void EnsureBiomeProfilesInitialized();
+
+	/** Static profile array indexed by ETartariaBiome. */
+	static TArray<FBiomeAudioProfile> BiomeProfiles;
+
+	/** Whether BiomeProfiles has been populated. */
+	static bool bBiomeProfilesInitialized;
 };

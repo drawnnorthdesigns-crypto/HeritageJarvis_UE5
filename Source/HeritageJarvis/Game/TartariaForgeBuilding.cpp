@@ -12,6 +12,7 @@
 #include "UObject/ConstructorHelpers.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonReader.h"
@@ -112,6 +113,275 @@ ATartariaForgeBuilding::ATartariaForgeBuilding()
 	ProgressText->SetTextRenderColor(FColor(136, 136, 136)); // Grey
 	ProgressText->SetWorldSize(24.f);
 	ProgressText->SetHorizontalAlignment(EHorizTextAligment::EHTA_Center);
+}
+
+// -------------------------------------------------------
+// BeginPlay
+// -------------------------------------------------------
+
+void ATartariaForgeBuilding::BeginPlay()
+{
+	Super::BeginPlay();
+
+	InitProxyPool();
+	InitEmberPool();
+}
+
+// -------------------------------------------------------
+// Proxy Primitive Object Pool
+// -------------------------------------------------------
+
+void ATartariaForgeBuilding::InitProxyPool()
+{
+	ProxyPool.Reserve(PROXY_POOL_SIZE);
+	ProxyPoolInUse.Init(false, PROXY_POOL_SIZE);
+
+	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr,
+		TEXT("/Engine/BasicShapes/Cube.Cube"));
+
+	for (int32 i = 0; i < PROXY_POOL_SIZE; ++i)
+	{
+		UStaticMeshComponent* Comp = NewObject<UStaticMeshComponent>(this,
+			*FString::Printf(TEXT("ProxyPool_%d"), i));
+		Comp->SetupAttachment(RootComponent);
+		Comp->RegisterComponent();
+		Comp->SetStaticMesh(CubeMesh);  // Default shape, overridden on acquire
+		Comp->SetVisibility(false);
+		Comp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+		// Translucent golden material
+		UMaterialInstanceDynamic* Mat = Comp->CreateDynamicMaterialInstance(0);
+		if (Mat)
+		{
+			Mat->SetVectorParameterValue(TEXT("BaseColor"),
+				FLinearColor(0.78f, 0.63f, 0.3f, 0.4f));
+		}
+
+		ProxyPool.Add(Comp);
+	}
+}
+
+UStaticMeshComponent* ATartariaForgeBuilding::AcquireProxyPrimitive()
+{
+	for (int32 i = 0; i < PROXY_POOL_SIZE; ++i)
+	{
+		if (!ProxyPoolInUse[i])
+		{
+			ProxyPoolInUse[i] = true;
+			++ActiveProxyCount;
+
+			UStaticMeshComponent* Comp = ProxyPool[i];
+			if (Comp)
+			{
+				Comp->SetVisibility(true);
+			}
+			return Comp;
+		}
+	}
+
+	// Pool exhausted — log warning once
+	if (!bPoolExhaustedWarned)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("Forge '%s': Proxy pool exhausted (%d/%d). Skipping additional proxy primitives."),
+			*BuildingName, ActiveProxyCount, PROXY_POOL_SIZE);
+		bPoolExhaustedWarned = true;
+	}
+	return nullptr;
+}
+
+void ATartariaForgeBuilding::ReleaseProxyPrimitive(UStaticMeshComponent* Comp)
+{
+	if (!Comp) return;
+
+	int32 Index = ProxyPool.Find(Comp);
+	if (Index == INDEX_NONE) return;
+
+	Comp->SetVisibility(false);
+	Comp->SetRelativeTransform(FTransform::Identity);
+	Comp->SetRelativeScale3D(FVector::OneVector);
+
+	ProxyPoolInUse[Index] = false;
+	--ActiveProxyCount;
+}
+
+void ATartariaForgeBuilding::ReleaseAllProxies()
+{
+	for (int32 i = 0; i < ProxyPool.Num(); ++i)
+	{
+		if (ProxyPoolInUse[i] && ProxyPool[i])
+		{
+			ProxyPool[i]->SetVisibility(false);
+			ProxyPool[i]->SetRelativeTransform(FTransform::Identity);
+			ProxyPool[i]->SetRelativeScale3D(FVector::OneVector);
+			ProxyPoolInUse[i] = false;
+		}
+	}
+	ActiveProxyCount = 0;
+	bPoolExhaustedWarned = false;
+}
+
+// -------------------------------------------------------
+// Ember Particle Pool
+// -------------------------------------------------------
+
+void ATartariaForgeBuilding::InitEmberPool()
+{
+	EmberPool.Reserve(MAX_EMBERS);
+	EmberMaterials.Reserve(MAX_EMBERS);
+	EmberLifetimes.Init(0.f, MAX_EMBERS);
+	EmberMaxLifetimes.Init(1.f, MAX_EMBERS);
+	EmberVelocities.Init(FVector::ZeroVector, MAX_EMBERS);
+	EmberScales.Init(FVector(0.03f), MAX_EMBERS);
+
+	UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr,
+		TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+
+	for (int32 i = 0; i < MAX_EMBERS; ++i)
+	{
+		UStaticMeshComponent* Comp = NewObject<UStaticMeshComponent>(this,
+			*FString::Printf(TEXT("EmberPool_%d"), i));
+		Comp->SetupAttachment(RootComponent);
+		Comp->RegisterComponent();
+		if (SphereMesh)
+		{
+			Comp->SetStaticMesh(SphereMesh);
+		}
+		Comp->SetVisibility(false);
+		Comp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Comp->SetCastShadow(false);
+		Comp->SetRelativeScale3D(FVector(0.03f));
+
+		// Create bright emissive orange material
+		UMaterialInstanceDynamic* Mat = Comp->CreateAndSetMaterialInstanceDynamic(0);
+		if (Mat)
+		{
+			// Bright orange-red ember color with strong emissive
+			FLinearColor EmberColor(1.0f, 0.4f, 0.05f);
+			Mat->SetVectorParameterValue(TEXT("Color"), EmberColor);
+			Mat->SetVectorParameterValue(TEXT("EmissiveColor"), EmberColor * 5.0f);
+			Mat->SetScalarParameterValue(TEXT("Emissive"), 5.0f);
+		}
+
+		EmberPool.Add(Comp);
+		EmberMaterials.Add(Mat);
+	}
+}
+
+void ATartariaForgeBuilding::SpawnEmber()
+{
+	// Find an inactive ember slot
+	int32 SlotIndex = INDEX_NONE;
+	for (int32 i = 0; i < MAX_EMBERS; ++i)
+	{
+		if (EmberLifetimes[i] <= 0.f)
+		{
+			SlotIndex = i;
+			break;
+		}
+	}
+
+	if (SlotIndex == INDEX_NONE) return; // All slots active
+
+	UStaticMeshComponent* Comp = EmberPool[SlotIndex];
+	if (!Comp) return;
+
+	// Randomize lifetime: 1.0 - 3.0 seconds
+	float Lifetime = FMath::FRandRange(1.0f, 3.0f);
+	EmberLifetimes[SlotIndex] = Lifetime;
+	EmberMaxLifetimes[SlotIndex] = Lifetime;
+
+	// Randomize scale: 2-5 cm (0.02 - 0.05 in UE units for a 100cm unit sphere)
+	float ScaleFactor = FMath::FRandRange(0.02f, 0.05f);
+	FVector Scale(ScaleFactor);
+	EmberScales[SlotIndex] = Scale;
+	Comp->SetRelativeScale3D(Scale);
+
+	// Spawn position: near chimney top with some random spread
+	// Chimney is at roughly (120, 0, 550) based on ChimneyLight position
+	FVector SpawnPos(
+		120.f + FMath::FRandRange(-30.f, 30.f),
+		FMath::FRandRange(-30.f, 30.f),
+		550.f + FMath::FRandRange(-20.f, 20.f)
+	);
+	Comp->SetRelativeLocation(SpawnPos);
+
+	// Velocity: upward 50-150 cm/s, random X/Y drift +/-20 cm/s
+	FVector Velocity(
+		FMath::FRandRange(-20.f, 20.f),
+		FMath::FRandRange(-20.f, 20.f),
+		FMath::FRandRange(50.f, 150.f)
+	);
+	EmberVelocities[SlotIndex] = Velocity;
+
+	// Reset material to full brightness
+	if (EmberMaterials[SlotIndex])
+	{
+		FLinearColor EmberColor(1.0f, 0.4f, 0.05f);
+		EmberMaterials[SlotIndex]->SetVectorParameterValue(TEXT("EmissiveColor"), EmberColor * 5.0f);
+		EmberMaterials[SlotIndex]->SetScalarParameterValue(TEXT("Emissive"), 5.0f);
+	}
+
+	Comp->SetVisibility(true);
+}
+
+void ATartariaForgeBuilding::UpdateEmbers(float DeltaTime)
+{
+	for (int32 i = 0; i < MAX_EMBERS; ++i)
+	{
+		if (EmberLifetimes[i] <= 0.f) continue;
+
+		EmberLifetimes[i] -= DeltaTime;
+
+		UStaticMeshComponent* Comp = EmberPool[i];
+		if (!Comp) continue;
+
+		if (EmberLifetimes[i] <= 0.f)
+		{
+			// Ember expired — hide and recycle
+			EmberLifetimes[i] = 0.f;
+			Comp->SetVisibility(false);
+			continue;
+		}
+
+		// Move ember: apply velocity
+		FVector CurrentLoc = Comp->GetRelativeLocation();
+		CurrentLoc += EmberVelocities[i] * DeltaTime;
+
+		// Add slight swirl/turbulence
+		float LifeRatio = EmberLifetimes[i] / EmberMaxLifetimes[i];
+		float Swirl = FMath::Sin(EmberLifetimes[i] * 8.f) * 5.f * DeltaTime;
+		CurrentLoc.X += Swirl;
+		CurrentLoc.Y += FMath::Cos(EmberLifetimes[i] * 6.f) * 3.f * DeltaTime;
+
+		Comp->SetRelativeLocation(CurrentLoc);
+
+		// Fade: shrink scale and reduce emissive as ember dies
+		float FadeAlpha = FMath::Clamp(LifeRatio, 0.f, 1.f);
+
+		// Scale shrinks in the last 40% of life
+		float ScaleMult = (LifeRatio < 0.4f) ? (LifeRatio / 0.4f) : 1.0f;
+		Comp->SetRelativeScale3D(EmberScales[i] * ScaleMult);
+
+		// Emissive fades: bright orange -> dim red -> dark
+		if (EmberMaterials[i])
+		{
+			// Color shifts from orange to red as it cools
+			FLinearColor FadedColor = FMath::Lerp(
+				FLinearColor(0.8f, 0.1f, 0.0f),   // Dying: dim red
+				FLinearColor(1.0f, 0.4f, 0.05f),   // Fresh: bright orange
+				FadeAlpha
+			);
+			float EmissiveStrength = 5.0f * FadeAlpha * FadeAlpha; // Quadratic falloff
+			EmberMaterials[i]->SetVectorParameterValue(TEXT("EmissiveColor"), FadedColor * EmissiveStrength);
+			EmberMaterials[i]->SetScalarParameterValue(TEXT("Emissive"), EmissiveStrength);
+		}
+	}
+}
+
+void ATartariaForgeBuilding::SetEmberSpawnRate(float Rate)
+{
+	EmberSpawnRate = FMath::Clamp(Rate, 0.f, 50.f);
 }
 
 // -------------------------------------------------------
@@ -719,6 +989,21 @@ void ATartariaForgeBuilding::Tick(float DeltaTime)
 		              + FMath::Sin(FlickerPhase * 5.3f) * 0.04f;
 		BuildingLight->SetIntensity(BaseIntensity * (1.f + Flicker));
 	}
+
+	// ── Billboard: ProgressText faces player camera ──
+	if (ProgressText)
+	{
+		APlayerController* PC = GetWorld()->GetFirstPlayerController();
+		if (PC)
+		{
+			FVector CamLoc;
+			FRotator CamRot;
+			PC->GetPlayerViewPoint(CamLoc, CamRot);
+			FRotator LookAt = UKismetMathLibrary::FindLookAtRotation(
+				ProgressText->GetComponentLocation(), CamLoc);
+			ProgressText->SetWorldRotation(LookAt);
+		}
+	}
 }
 
 void ATartariaForgeBuilding::SetForgeActive(bool bActive, const FString& StageName)
@@ -1324,43 +1609,43 @@ void ATartariaForgeBuilding::AddProxyPrimitive(const FString& Type, FVector Loca
 		return;
 	}
 
-	// Create a unique name for this component
-	FName CompName = *FString::Printf(TEXT("ProxyPrim_%d"), ProxyPrimitives.Num());
-	UStaticMeshComponent* NewComp = NewObject<UStaticMeshComponent>(this, CompName);
-	if (!NewComp) return;
+	// Acquire a component from the pre-allocated pool instead of creating one
+	UStaticMeshComponent* PoolComp = AcquireProxyPrimitive();
+	if (!PoolComp) return;  // Pool exhausted — warning already logged
 
-	// Attach to the pedestal so proxy geometry appears on the display platform
+	// Re-attach to pedestal so proxy geometry appears on the display platform
 	if (PedestalMesh)
 	{
-		NewComp->SetupAttachment(PedestalMesh);
+		PoolComp->AttachToComponent(PedestalMesh,
+			FAttachmentTransformRules::KeepRelativeTransform);
 	}
 	else
 	{
-		NewComp->SetupAttachment(RootComponent);
+		PoolComp->AttachToComponent(RootComponent,
+			FAttachmentTransformRules::KeepRelativeTransform);
 	}
-	NewComp->RegisterComponent();
 
-	NewComp->SetStaticMesh(ShapeMesh);
-	NewComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	PoolComp->SetStaticMesh(ShapeMesh);
+	PoolComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
 	// Position relative to the pedestal top
 	// Pedestal top is at approximately Z=40 (from DisplayModelMesh offset)
 	FVector PedestalTopOffset = FVector(0.0f, 0.0f, 40.0f);
-	NewComp->SetRelativeLocation(PedestalTopOffset + Location);
-	NewComp->SetRelativeRotation(Rotation);
+	PoolComp->SetRelativeLocation(PedestalTopOffset + Location);
+	PoolComp->SetRelativeRotation(Rotation);
 
 	// Start at zero scale — will animate up
-	NewComp->SetRelativeScale3D(FVector::ZeroVector);
+	PoolComp->SetRelativeScale3D(FVector::ZeroVector);
 
 	// Apply the translucent golden proxy material
 	if (ProxyMaterial)
 	{
-		NewComp->SetMaterial(0, ProxyMaterial);
+		PoolComp->SetMaterial(0, ProxyMaterial);
 	}
 	else
 	{
 		// Fallback: create a per-component dynamic material
-		UMaterialInstanceDynamic* DynMat = NewComp->CreateAndSetMaterialInstanceDynamic(0);
+		UMaterialInstanceDynamic* DynMat = PoolComp->CreateAndSetMaterialInstanceDynamic(0);
 		if (DynMat)
 		{
 			DynMat->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.9f, 0.75f, 0.2f));
@@ -1370,7 +1655,7 @@ void ATartariaForgeBuilding::AddProxyPrimitive(const FString& Type, FVector Loca
 	}
 
 	int32 NewIndex = ProxyPrimitives.Num();
-	ProxyPrimitives.Add(NewComp);
+	ProxyPrimitives.Add(PoolComp);
 
 	// Queue scale-up animation: 0 -> target over 0.3 seconds
 	FProxyScaleAnim Anim;
@@ -1387,20 +1672,15 @@ void ATartariaForgeBuilding::AddProxyPrimitive(const FString& Type, FVector Loca
 
 void ATartariaForgeBuilding::ClearProxyGeometry()
 {
-	for (UStaticMeshComponent* Comp : ProxyPrimitives)
-	{
-		if (Comp)
-		{
-			Comp->DestroyComponent();
-		}
-	}
+	// Release all active proxies back to the pool instead of destroying them
+	ReleaseAllProxies();
 	ProxyPrimitives.Empty();
 	ProxyScaleAnims.Empty();
 	bProxyActive = false;
 	bSolidifyActive = false;
 	SolidifyElapsed = 0.0f;
 
-	UE_LOG(LogTemp, Log, TEXT("Forge '%s': Proxy geometry cleared"), *BuildingName);
+	UE_LOG(LogTemp, Log, TEXT("Forge '%s': Proxy geometry cleared (pool released)"), *BuildingName);
 }
 
 void ATartariaForgeBuilding::SolidifyProxy()
