@@ -66,12 +66,55 @@ void UHJEventPoller::PollNow()
 }
 
 // -------------------------------------------------------
+// WebSocket / HTTP deduplication
+// -------------------------------------------------------
+
+void UHJEventPoller::OnWebSocketDataReceived(const FString& Channel)
+{
+    UWorld* World = GetWorld();
+    float NowTime = World ? World->GetTimeSeconds() : 0.f;
+
+    // Log the first transition from HTTP-only to WS-active
+    if (!bWebSocketActive)
+    {
+        UE_LOG(LogTemp, Log, TEXT("HJEventPoller: WebSocket active — suspending HTTP polling (channel=%s)"), *Channel);
+    }
+
+    bWebSocketActive   = true;
+    LastWSMessageTime  = NowTime;
+}
+
+bool UHJEventPoller::ShouldPollHTTP() const
+{
+    // WS never connected — always poll HTTP
+    if (!bWebSocketActive) return true;
+
+    UWorld* World = GetWorld();
+    float NowTime = World ? World->GetTimeSeconds() : 0.f;
+
+    if ((NowTime - LastWSMessageTime) > WSFallbackTimeout)
+    {
+        // Mark stale — const_cast is intentional: this is a lazy state update
+        UHJEventPoller* MutableThis = const_cast<UHJEventPoller*>(this);
+        MutableThis->bWebSocketActive = false;
+        UE_LOG(LogTemp, Warning,
+            TEXT("HJEventPoller: WebSocket stale — resuming HTTP polling (last message %.1fs ago)"),
+            NowTime - LastWSMessageTime);
+        return true;
+    }
+
+    // WS is healthy — skip HTTP
+    return false;
+}
+
+// -------------------------------------------------------
 // Private — poll implementations
 // -------------------------------------------------------
 
 void UHJEventPoller::PollPipelineStatus()
 {
     if (!ApiClient || ActiveProjectId.IsEmpty()) return;
+    if (!ShouldPollHTTP()) return;  // WebSocket is delivering data — skip HTTP
 
     FString ProjectId = ActiveProjectId;  // capture by value for lambda
 
@@ -90,6 +133,7 @@ void UHJEventPoller::PollPipelineStatus()
 void UHJEventPoller::PollHealth()
 {
     if (!ApiClient) return;
+    if (!ShouldPollHTTP()) return;  // WebSocket is delivering data — skip HTTP
 
     // Fix: Weak pointer prevents crash if EventPoller is GC'd before callback fires
     TWeakObjectPtr<UHJEventPoller> WeakThis(this);

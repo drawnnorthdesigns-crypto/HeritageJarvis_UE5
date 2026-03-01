@@ -10,6 +10,13 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnWSConnected);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWSDisconnected, const FString&, Reason);
 
 /**
+ * Fires after every successfully parsed channel message.
+ * HJGameInstance binds this to HJEventPoller::OnWebSocketDataReceived
+ * so the poller can suppress redundant HTTP polling while WS is healthy.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWSDataReceived, const FString&, Channel);
+
+/**
  * UHJWebSocketClient -- Real-time event bridge to Flask WebSocket hub.
  * Connects to ws://127.0.0.1:5000/ws and receives multiplexed channel messages.
  * Channels: game, pipeline, health, proxy, chat, mesh
@@ -51,6 +58,14 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "HJ|WebSocket")
 	FOnWSDisconnected OnDisconnected;
+
+	/**
+	 * Fires after every parsed channel message with the channel name.
+	 * Bound by HJGameInstance to HJEventPoller::OnWebSocketDataReceived
+	 * to suppress HTTP polling while the WebSocket is healthy.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "HJ|WebSocket")
+	FOnWSDataReceived OnDataReceived;
 
 	/** Call periodically to attempt reconnection if disconnected. */
 	void Tick(float DeltaTime);

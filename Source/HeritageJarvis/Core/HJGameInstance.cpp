@@ -91,7 +91,20 @@ void UHJGameInstance::OnHealthResponse(bool bSuccess, const FString& Body)
 
 			// Connect WebSocket client for real-time events
 			if (WebSocketClient)
+			{
 				WebSocketClient->Connect();
+
+				// Wire WS data notifications to EventPoller so it can suspend
+				// redundant HTTP polling while the WebSocket is delivering data.
+				if (EventPoller)
+				{
+					WebSocketClient->OnDataReceived.AddDynamic(
+						EventPoller,
+						&UHJEventPoller::OnWebSocketDataReceived);
+					UE_LOG(LogTemp, Log,
+						TEXT("HJGameInstance: WebSocket OnDataReceived wired to EventPoller"));
+				}
+			}
 		}
 	}
 }

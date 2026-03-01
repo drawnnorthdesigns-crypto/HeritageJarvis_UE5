@@ -407,6 +407,64 @@ enum class EFlightState : uint8
 	Orbital      UMETA(DisplayName = "Orbital Flight")
 };
 
+/** A single resource deposit within a celestial landing zone. */
+USTRUCT(BlueprintType)
+struct FCelestialResource
+{
+	GENERATED_BODY()
+
+	/** Resource type identifier (e.g. "iron", "helium3", "exotic"). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	FString ResourceType;
+
+	/** Available quantity fraction 0-1. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	float Abundance = 0.f;
+
+	/** How hard to extract, 0 (easy) to 1 (extreme). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	float ExtractionDifficulty = 0.f;
+
+	/** Fraction already depleted 0-1 (0 = full, 1 = exhausted). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	float DepletionPct = 0.f;
+};
+
+/** A landable zone on a celestial body. */
+USTRUCT(BlueprintType)
+struct FTartariaLandingZone
+{
+	GENERATED_BODY()
+
+	/** Unique zone key (e.g. "mars_olympus"). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	FString ZoneId;
+
+	/** Human-readable display name. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	FString ZoneName;
+
+	/** Biome type string matching ETartariaBiome display names. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	FString BiomeType;
+
+	/** Hazard level 0 (safe) to 1 (lethal). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	float HazardLevel = 0.f;
+
+	/** Whether the player has visited this zone. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	bool bDiscovered = false;
+
+	/** Short description shown in landing UI. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	FString Description;
+
+	/** Resource deposits available in this zone. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Celestial")
+	TArray<FCelestialResource> Resources;
+};
+
 /** Celestial body data — mirrors Python solar_system.py BODIES. */
 USTRUCT(BlueprintType)
 struct FTartariaCelestialBody
@@ -450,6 +508,10 @@ struct FTartariaCelestialBody
 	/** Current orbital angle in radians (updated by simulation). */
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Solar")
 	double CurrentAngleRad = 0.0;
+
+	/** Landing zones populated from /api/game/celestial/<body_id> on arrival. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Celestial")
+	TArray<FTartariaLandingZone> LandingZones;
 };
 
 /** Transit request — sent to Python /api/game/transit/start. */

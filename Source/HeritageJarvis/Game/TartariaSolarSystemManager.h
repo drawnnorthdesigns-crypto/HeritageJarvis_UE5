@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Dom/JsonObject.h"
 #include "TartariaTypes.h"
 #include "TartariaSolarSystemManager.generated.h"
 
@@ -76,9 +77,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Solar")
 	FString GetPlayerCurrentBody() const { return PlayerCurrentBody; }
 
-	/** Set which body the player is at (updated on transit arrival). */
+	/** Set which body the player is at (updated on transit arrival).
+	 *  Also fetches celestial content from the Python backend and populates
+	 *  LandingZones on the matching FTartariaCelestialBody entry.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Solar")
 	void SetPlayerCurrentBody(const FString& BodyKey);
+
+	/** Parse landing-zone and resource content from /api/game/celestial/<body_id>
+	 *  JSON and store it in the body's LandingZones array.
+	 *
+	 *  @param ContentJson  The parsed JSON object returned by the Flask endpoint.
+	 *  @param BodyId       The body key this content belongs to (e.g. "mars").
+	 */
+	void ParseCelestialContent(const TSharedPtr<FJsonObject>& ContentJson,
+	                           const FString& BodyId);
 
 	// -------------------------------------------------------
 	// Transit calculations

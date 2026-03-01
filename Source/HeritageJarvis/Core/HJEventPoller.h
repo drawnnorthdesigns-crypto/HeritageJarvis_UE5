@@ -108,6 +108,40 @@ public:
     UFUNCTION(BlueprintCallable, Category = "HJ|Polling")
     void PollNow();
 
+    // -------------------------------------------------------
+    // WebSocket / HTTP deduplication
+    // -------------------------------------------------------
+
+    /**
+     * Called by HJWebSocketClient (via HJGameInstance wiring) whenever a
+     * real message arrives on any channel.  Marks WS as active so HTTP
+     * polling is suspended while the WebSocket is healthy.
+     */
+    UFUNCTION(BlueprintCallable, Category = "HJ|Polling")
+    void OnWebSocketDataReceived(const FString& Channel);
+
+    /**
+     * Returns true when HTTP polling should fire.
+     * False while WebSocket is delivering data within WSFallbackTimeout seconds.
+     */
+    UFUNCTION(BlueprintPure, Category = "HJ|Polling")
+    bool ShouldPollHTTP() const;
+
+    /** True once the WebSocket has delivered at least one message. */
+    UPROPERTY(BlueprintReadOnly, Category = "HJ|Polling")
+    bool bWebSocketActive = false;
+
+    /** World time (seconds) of the last WebSocket message received. */
+    UPROPERTY(BlueprintReadOnly, Category = "HJ|Polling")
+    float LastWSMessageTime = 0.f;
+
+    /**
+     * If no WebSocket message arrives within this many seconds the poller
+     * considers the WebSocket stale and resumes HTTP polling automatically.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HJ|Polling")
+    float WSFallbackTimeout = 10.0f;
+
 private:
     UPROPERTY()
     UHJApiClient* ApiClient = nullptr;

@@ -821,12 +821,23 @@ void ATartariaForgeBuilding::Tick(float DeltaTime)
 		}
 	}
 
-	// ── Forge Queue Counter: Poll every 5 seconds ──
+	// ── Forge Queue Counter: Poll every 5 seconds (per-forge filtered) ──
 	QueuePollTimer += DeltaTime;
 	if (QueuePollTimer >= 5.0f)
 	{
 		QueuePollTimer = 0.0f;
-		PollQueueStatus();
+		// Use PollForgeStatus() when this forge has a BuildingId so the
+		// backend filters results to only this forge's assigned job.
+		// Fall back to PollQueueStatus() for forges without an ID (e.g.
+		// placed in editor without a BuildingId set).
+		if (!BuildingId.IsEmpty())
+		{
+			PollForgeStatus();
+		}
+		else
+		{
+			PollQueueStatus();
+		}
 	}
 
 	// ── Live Proxy: Poll every 2 seconds while forge has active job ──
@@ -1377,6 +1388,74 @@ void ATartariaForgeBuilding::PollQueueStatus()
 	});
 
 	GI->ApiClient->Get(TEXT("/api/engineering/queue-status"), CB);
+}
+
+void ATartariaForgeBuilding::PollForgeStatus()
+{
+	// Build the per-forge URL: /api/engineering/queue-status?forge_id=<BuildingId>
+	// The backend will filter active_job to only the job assigned to this forge.
+	if (BuildingId.IsEmpty()) return;
+
+	UHJGameInstance* GI = UHJGameInstance::Get(this);
+	if (!GI || !GI->ApiClient) return;
+
+	FString Url = FString::Printf(
+		TEXT("/api/engineering/queue-status?forge_id=%s"), *BuildingId);
+
+	TWeakObjectPtr<ATartariaForgeBuilding> WeakThis(this);
+
+	FOnApiResponse CB;
+	CB.BindLambda([WeakThis](bool bOk, const FString& RespBody)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, bOk, RespBody]()
+		{
+			ATartariaForgeBuilding* Self = WeakThis.Get();
+			if (!Self) return;
+
+			if (!bOk) return;
+
+			TSharedPtr<FJsonObject> Json;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(RespBody);
+			if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
+				return;
+
+			// Update global queue counters (same as the unfiltered poll)
+			Self->QueueCompletedToday = Json->GetIntegerField(TEXT("completed_today"));
+			Self->QueueTotalJobs      = Json->GetIntegerField(TEXT("total_jobs"));
+
+			// active_job is now filtered to THIS forge's assigned job only.
+			// If null → forge has no active job → show idle state.
+			const TSharedPtr<FJsonObject>* ActiveJobObj = nullptr;
+			if (Json->TryGetObjectField(TEXT("active_job"), ActiveJobObj)
+				&& ActiveJobObj && ActiveJobObj->IsValid())
+			{
+				Self->bQueueHasActiveJob   = true;
+				Self->QueueProgressPct     = (*ActiveJobObj)->GetIntegerField(TEXT("progress_pct"));
+				Self->QueueActiveStageName = (*ActiveJobObj)->GetStringField(TEXT("stage"));
+
+				UE_LOG(LogTemp, Verbose,
+					TEXT("Forge '%s' [%s]: assigned job active — stage=%s pct=%d"),
+					*Self->BuildingName, *Self->BuildingId,
+					*Self->QueueActiveStageName, Self->QueueProgressPct);
+			}
+			else
+			{
+				// No job assigned or assigned job is not running
+				Self->bQueueHasActiveJob   = false;
+				Self->QueueProgressPct     = 0;
+				Self->QueueActiveStageName = TEXT("");
+
+				// Log once (at Verbose) when the forge just went idle
+				UE_LOG(LogTemp, Verbose,
+					TEXT("Forge '%s' [%s]: no assigned job active"),
+					*Self->BuildingName, *Self->BuildingId);
+			}
+
+			Self->ApplyQueueVisuals();
+		});
+	});
+
+	GI->ApiClient->Get(Url, CB);
 }
 
 void ATartariaForgeBuilding::ApplyQueueVisuals()

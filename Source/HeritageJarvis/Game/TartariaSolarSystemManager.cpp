@@ -1,6 +1,12 @@
 #include "TartariaSolarSystemManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "EngineUtils.h"
+#include "HttpModule.h"
+#include "Interfaces/IHttpResponse.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 
 TWeakObjectPtr<ATartariaSolarSystemManager> ATartariaSolarSystemManager::Instance;
 
@@ -128,6 +134,163 @@ void ATartariaSolarSystemManager::SetPlayerCurrentBody(const FString& BodyKey)
 {
 	PlayerCurrentBody = BodyKey;
 	RebaseOriginToBody(BodyKey);
+
+	// ── Fetch celestial content from Python backend ──────────────────────────
+	// Fire-and-forget HTTP GET to /api/game/celestial/<body_id>.
+	// On success: parse landing zones + resources into the matching Body entry.
+	// Sol has no landing zones but we still fetch for consistency.
+	FString Url = FString::Printf(TEXT("http://127.0.0.1:5000/api/game/celestial/%s"), *BodyKey);
+
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Req =
+		FHttpModule::Get().CreateRequest();
+	Req->SetURL(Url);
+	Req->SetVerb(TEXT("GET"));
+	Req->SetHeader(TEXT("Accept"), TEXT("application/json"));
+
+	// Capture BodyKey by value; 'this' captured weakly via weak ptr
+	TWeakObjectPtr<ATartariaSolarSystemManager> WeakThis(this);
+
+	Req->OnProcessRequestComplete().BindLambda(
+		[WeakThis, BodyKey](FHttpRequestPtr /*Req*/, FHttpResponsePtr Response, bool bConnected)
+		{
+			if (!bConnected || !Response.IsValid())
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("SolarSystem: celestial content fetch failed for %s (no connection)"),
+					*BodyKey);
+				return;
+			}
+
+			if (Response->GetResponseCode() != 200)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("SolarSystem: celestial content HTTP %d for %s"),
+					Response->GetResponseCode(), *BodyKey);
+				return;
+			}
+
+			TSharedPtr<FJsonObject> JsonObj;
+			TSharedRef<TJsonReader<>> Reader =
+				TJsonReaderFactory<>::Create(Response->GetContentAsString());
+			if (!FJsonSerializer::Deserialize(Reader, JsonObj) || !JsonObj.IsValid())
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("SolarSystem: failed to parse celestial JSON for %s"), *BodyKey);
+				return;
+			}
+
+			ATartariaSolarSystemManager* Manager = WeakThis.Get();
+			if (Manager)
+			{
+				Manager->ParseCelestialContent(JsonObj, BodyKey);
+			}
+		});
+
+	Req->ProcessRequest();
+}
+
+// -------------------------------------------------------
+// Celestial content parsing
+// -------------------------------------------------------
+
+void ATartariaSolarSystemManager::ParseCelestialContent(
+	const TSharedPtr<FJsonObject>& ContentJson, const FString& BodyId)
+{
+	if (!ContentJson.IsValid())
+		return;
+
+	// Find the matching body entry
+	FTartariaCelestialBody* BodyPtr = nullptr;
+	for (FTartariaCelestialBody& B : Bodies)
+	{
+		if (B.BodyKey.Equals(BodyId, ESearchCase::IgnoreCase))
+		{
+			BodyPtr = &B;
+			break;
+		}
+	}
+
+	if (!BodyPtr)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SolarSystem: ParseCelestialContent — body '%s' not in Bodies array"), *BodyId);
+		return;
+	}
+
+	// Clear stale data before repopulating
+	BodyPtr->LandingZones.Empty();
+
+	// Parse "landing_zones" array
+	const TArray<TSharedPtr<FJsonValue>>* ZonesArr = nullptr;
+	if (!ContentJson->TryGetArrayField(TEXT("landing_zones"), ZonesArr) || !ZonesArr)
+	{
+		// Body may legitimately have no landing zones (e.g. Sol)
+		UE_LOG(LogTemp, Log,
+			TEXT("SolarSystem: '%s' has no landing_zones in content"), *BodyId);
+		return;
+	}
+
+	for (const TSharedPtr<FJsonValue>& ZoneVal : *ZonesArr)
+	{
+		const TSharedPtr<FJsonObject>* ZoneObjPtr = nullptr;
+		if (!ZoneVal->TryGetObject(ZoneObjPtr) || !ZoneObjPtr)
+			continue;
+
+		const TSharedPtr<FJsonObject>& ZoneObj = *ZoneObjPtr;
+		FTartariaLandingZone Zone;
+
+		ZoneObj->TryGetStringField(TEXT("zone_id"),    Zone.ZoneId);
+		ZoneObj->TryGetStringField(TEXT("name"),       Zone.ZoneName);
+		ZoneObj->TryGetStringField(TEXT("biome_type"), Zone.BiomeType);
+		ZoneObj->TryGetStringField(TEXT("description"),Zone.Description);
+		ZoneObj->TryGetBoolField  (TEXT("discovered"), Zone.bDiscovered);
+
+		double HazardLevel = 0.0;
+		ZoneObj->TryGetNumberField(TEXT("hazard_level"), HazardLevel);
+		Zone.HazardLevel = static_cast<float>(HazardLevel);
+
+		// Parse resources within each zone
+		const TArray<TSharedPtr<FJsonValue>>* ResArr = nullptr;
+		if (ZoneObj->TryGetArrayField(TEXT("resources"), ResArr) && ResArr)
+		{
+			for (const TSharedPtr<FJsonValue>& ResVal : *ResArr)
+			{
+				const TSharedPtr<FJsonObject>* ResObjPtr = nullptr;
+				if (!ResVal->TryGetObject(ResObjPtr) || !ResObjPtr)
+					continue;
+
+				const TSharedPtr<FJsonObject>& ResObj = *ResObjPtr;
+				FCelestialResource Res;
+
+				ResObj->TryGetStringField(TEXT("type"), Res.ResourceType);
+
+				double Abundance = 0.0, Difficulty = 0.0, Depleted = 0.0;
+				ResObj->TryGetNumberField(TEXT("abundance"),              Abundance);
+				ResObj->TryGetNumberField(TEXT("extraction_difficulty"),  Difficulty);
+				ResObj->TryGetNumberField(TEXT("depleted"),               Depleted);
+
+				Res.Abundance            = static_cast<float>(Abundance);
+				Res.ExtractionDifficulty = static_cast<float>(Difficulty);
+				Res.DepletionPct         = static_cast<float>(Depleted);
+
+				Zone.Resources.Add(Res);
+			}
+		}
+
+		BodyPtr->LandingZones.Add(Zone);
+	}
+
+	UE_LOG(LogTemp, Log,
+		TEXT("SolarSystem: Populated %d landing zone(s) for '%s'"),
+		BodyPtr->LandingZones.Num(), *BodyId);
+
+	// Log available zone names for immediate debugging
+	for (const FTartariaLandingZone& Z : BodyPtr->LandingZones)
+	{
+		UE_LOG(LogTemp, Log,
+			TEXT("  Zone: %s | Biome: %s | Hazard: %.2f | Resources: %d"),
+			*Z.ZoneName, *Z.BiomeType, Z.HazardLevel, Z.Resources.Num());
+	}
 }
 
 // -------------------------------------------------------

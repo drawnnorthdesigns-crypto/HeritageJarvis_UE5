@@ -169,4 +169,8 @@ void UHJWebSocketClient::ParseMessage(const FString& RawMessage)
 	}
 
 	OnMessage.Broadcast(Channel, Payload);
+
+	// Notify EventPoller (via HJGameInstance wiring) that the WebSocket is
+	// actively delivering data so HTTP polling can be suspended.
+	OnDataReceived.Broadcast(Channel);
 }

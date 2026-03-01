@@ -230,6 +230,15 @@ public:
 	UPROPERTY()
 	UMaterialInstanceDynamic* ProxyMaterial = nullptr;
 
+	/**
+	 * Poll the queue-status endpoint filtered to this forge's BuildingId.
+	 * Sends ?forge_id=BuildingId so the backend only returns the job
+	 * assigned to this specific forge building.  Called from Tick via
+	 * QueuePollTimer (every 5 seconds), replacing the global poll.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Forge")
+	void PollForgeStatus();
+
 	/** Poll the live-proxy endpoint and spawn/update proxy geometry */
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Forge|Proxy")
 	void PollLiveProxy();

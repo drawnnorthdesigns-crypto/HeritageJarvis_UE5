@@ -232,6 +232,25 @@ public:
 private:
 	void SendDialogueRequest(APlayerController* Interactor, const FString& PlayerMessage);
 
+	// ── Dialogue Priority Queue ───────────────────────────────
+	/** True while an HTTP dialogue request is in-flight. Prevents concurrent requests. */
+	bool bDialogueRequestPending = false;
+
+	/** Prompts queued while a request is in-flight (max 3, oldest discarded). */
+	TArray<FString> PendingDialoguePrompts;
+
+	/** Seconds before a stuck pending state is automatically cleared. */
+	float DialogueRequestTimeout = 10.0f;
+
+	/** Elapsed time since the current request was sent (reset to 0 on each new request). */
+	float DialogueRequestTimer = 0.0f;
+
+	/** Pop the oldest queued prompt and fire SendDialogueRequest with it. */
+	void ProcessNextDialoguePrompt();
+
+	/** Called when DialogueRequestTimer exceeds DialogueRequestTimeout — clears stuck state. */
+	void OnDialogueTimeout();
+
 	/** Apply a solid color to a static mesh component via dynamic material instance. */
 	static void ApplyColorToMesh(UStaticMeshComponent* Mesh, const FLinearColor& Color);
 

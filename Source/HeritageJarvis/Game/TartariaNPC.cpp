@@ -445,6 +445,16 @@ void ATartariaNPC::Tick(float DeltaTime)
 		}
 	}
 
+	// ── Dialogue Request Timeout Guard ──────────────────────
+	if (bDialogueRequestPending)
+	{
+		DialogueRequestTimer += DeltaTime;
+		if (DialogueRequestTimer >= DialogueRequestTimeout)
+		{
+			OnDialogueTimeout();
+		}
+	}
+
 	// ── Reputation Aura Pulse ────────────────────────────────
 	if (ReputationAura)
 	{
@@ -1312,8 +1322,24 @@ void ATartariaNPC::OnInteract_Implementation(APlayerController* Interactor)
 	// Enter dialogue mode — enables eye contact tracking + fetches reputation
 	StartDialogue();
 
-	// Send initial greeting dialogue
-	SendDialogueRequest(Interactor, TEXT("Greetings."));
+	// Send initial greeting dialogue — or queue it if a request is already in-flight
+	const FString GreetingMsg = TEXT("Greetings.");
+	if (bDialogueRequestPending)
+	{
+		// Cap queue at 3 entries; discard oldest if full
+		if (PendingDialoguePrompts.Num() >= 3)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("TartariaNPC [%s]: Dialogue queue full — discarding oldest prompt."), *NPCName);
+			PendingDialoguePrompts.RemoveAt(0);
+		}
+		PendingDialoguePrompts.Add(GreetingMsg);
+		UE_LOG(LogTemp, Log, TEXT("TartariaNPC [%s]: Request pending — queued prompt '%s' (queue size: %d)."),
+			*NPCName, *GreetingMsg, PendingDialoguePrompts.Num());
+	}
+	else
+	{
+		SendDialogueRequest(Interactor, GreetingMsg);
+	}
 
 	// Fire Blueprint event for custom UI
 	OnDialogueStarted(Interactor, TEXT("{}"));
@@ -1425,8 +1451,11 @@ void ATartariaNPC::SendDialogueRequest(APlayerController* Interactor, const FStr
 
 					if (!bOk)
 					{
+						S->bDialogueRequestPending = false;
+						S->DialogueRequestTimer = 0.f;
 						S->OnDialogueErroredDelegate.Broadcast(S->NPCName);
 						S->OnDialogueError();
+						S->ProcessNextDialoguePrompt();
 						return;
 					}
 
@@ -1494,13 +1523,54 @@ void ATartariaNPC::SendDialogueRequest(APlayerController* Interactor, const FStr
 						S->OnDialogueErroredDelegate.Broadcast(S->NPCName);
 						S->OnDialogueError();
 					}
+
+					// Release the pending guard and drain the queue
+					S->bDialogueRequestPending = false;
+					S->DialogueRequestTimer = 0.f;
+					S->ProcessNextDialoguePrompt();
 				});
 			});
 
+			Self->bDialogueRequestPending = true;
+			Self->DialogueRequestTimer = 0.f;
 			GI2->ApiClient->Post(Self->DialogueEndpoint, BodyStr, CB);
 		});
 	});
 
 	// Fire async fetch for forge context (non-blocking; if it fails, dialogue proceeds without context)
 	GI->ApiClient->Get(TEXT("/api/engineering/forge-context"), CtxCB);
+}
+
+// -------------------------------------------------------
+// Dialogue Priority Queue
+// -------------------------------------------------------
+
+void ATartariaNPC::ProcessNextDialoguePrompt()
+{
+	if (PendingDialoguePrompts.Num() == 0)
+		return;
+
+	// Pop the oldest queued prompt
+	FString NextPrompt = PendingDialoguePrompts[0];
+	PendingDialoguePrompts.RemoveAt(0);
+
+	UE_LOG(LogTemp, Log, TEXT("TartariaNPC [%s]: Processing queued prompt '%s' (%d remaining)."),
+		*NPCName, *NextPrompt, PendingDialoguePrompts.Num());
+
+	// Interactor is not available here; pass nullptr — SendDialogueRequest
+	// only uses it to propagate to Blueprint events which accept nullptr safely.
+	SendDialogueRequest(nullptr, NextPrompt);
+}
+
+void ATartariaNPC::OnDialogueTimeout()
+{
+	UE_LOG(LogTemp, Warning,
+		TEXT("TartariaNPC [%s]: Dialogue request timed out after %.1fs — clearing pending state."),
+		*NPCName, DialogueRequestTimeout);
+
+	bDialogueRequestPending = false;
+	DialogueRequestTimer = 0.f;
+
+	// Attempt to drain the queue so interaction is not permanently blocked
+	ProcessNextDialoguePrompt();
 }
