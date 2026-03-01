@@ -22,6 +22,7 @@ class HERITAGEJARVIS_API ATartariaResourceNode : public AActor, public IHJIntera
 public:
 	ATartariaResourceNode();
 
+	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
 
 	// -------------------------------------------------------
@@ -72,6 +73,9 @@ public:
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Tartaria|Resource")
 	void OnRespawned();
+
+	/** Spawn floating orbs that rise from the node when harvested. */
+	void SpawnHarvestEffect();
 
 private:
 	void Respawn();

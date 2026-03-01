@@ -74,7 +74,17 @@ public:
     UFUNCTION(BlueprintNativeEvent, Category = "HJ|Pause")
     void OnChatError();
 
+    virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+
+    /** Start fade-in animation. Called by GameMode when showing. */
+    UFUNCTION(BlueprintCallable, Category = "HJ|Pause")
+    void PlayFadeIn();
+
 private:
+    /** Fade animation state. */
+    float FadeAlpha = 0.f;
+    int32 FadeDir = 0;
+
     // -------------------------------------------------------
     // Programmatic layout
     // -------------------------------------------------------
@@ -92,6 +102,12 @@ private:
 
     UFUNCTION()
     void OnDashboardBtnClicked();
+
+    UFUNCTION()
+    void OnSaveBtnClicked();
+
+    UFUNCTION()
+    void OnLoadBtnClicked();
 
     // -------------------------------------------------------
     // Widget references (prevent GC)
@@ -120,4 +136,10 @@ private:
 
     UPROPERTY()
     UButton* DashboardBtn = nullptr;
+
+    UPROPERTY()
+    UButton* SaveBtn = nullptr;
+
+    UPROPERTY()
+    UButton* LoadBtn = nullptr;
 };

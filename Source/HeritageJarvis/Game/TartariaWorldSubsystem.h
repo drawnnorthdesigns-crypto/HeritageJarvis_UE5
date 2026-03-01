@@ -7,6 +7,7 @@
 #include "TartariaWorldSubsystem.generated.h"
 
 class ATartariaQuestMarker;
+class ATartariaEnemyActor;
 
 /**
  * UTartariaWorldSubsystem — Manages open world state.
@@ -102,6 +103,36 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|World")
 	void SyncWithBackend();
 
+	/** When true, SSE stream is providing state — skip polling. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|World")
+	bool bUseSSE = false;
+
+	// -------------------------------------------------------
+	// Enemy Spawning & Combat
+	// -------------------------------------------------------
+
+	/** Spawn an enemy actor near the player from threat data. */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Enemy")
+	void SpawnEnemyFromThreat(const FString& InEnemyName, int32 Power, int32 InDifficulty, int32 Reward, const FString& InScenarioKey);
+
+	/** Resolve combat with the nearest active enemy. */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Enemy")
+	void ResolveCombatWithNearestEnemy(bool bPlayerWins);
+
+	// -------------------------------------------------------
+	// World Consequences — visual zone modifiers
+	// -------------------------------------------------------
+
+	/** Handle incoming WebSocket messages from Flask hub. */
+	UFUNCTION()
+	void OnWebSocketMessage(const FString& Channel, const FString& Payload);
+
+	/** Poll world consequences for visual modifiers. */
+	void PollWorldConsequences();
+
+	/** Apply visual modifiers to biome volumes. */
+	void ApplyZoneVisualModifiers(const TSharedPtr<FJsonObject>& ModifiersJson);
+
 private:
 	void OnWorldStateResponse(bool bSuccess, const FString& Body);
 	void ParseWorldState(const FString& JsonBody);
@@ -139,4 +170,16 @@ private:
 	/** Spawned quest markers tracked for cleanup. */
 	UPROPERTY()
 	TArray<ATartariaQuestMarker*> SpawnedMarkers;
+
+	/** Process threat data from backend JSON to spawn enemies. */
+	void ProcessThreatData(const TSharedPtr<FJsonObject>& ThreatJson);
+
+	/** Currently alive enemy actors (weak refs auto-clear on destroy). */
+	TArray<TWeakObjectPtr<ATartariaEnemyActor>> ActiveEnemies;
+
+	/** Time accumulator for world consequence polling. */
+	float ConsequencePollTimer = 0.f;
+
+	/** Consequence poll interval (15 seconds). */
+	static constexpr float ConsequencePollSec = 15.f;
 };

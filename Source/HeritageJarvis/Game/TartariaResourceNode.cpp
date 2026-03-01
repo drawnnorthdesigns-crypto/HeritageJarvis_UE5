@@ -1,9 +1,12 @@
 #include "TartariaResourceNode.h"
 #include "Core/HJGameInstance.h"
 #include "Core/HJApiClient.h"
+#include "Core/TartariaSoundManager.h"
 #include "UI/HJNotificationWidget.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
@@ -32,6 +35,37 @@ ATartariaResourceNode::ATartariaResourceNode()
 	GlowLight->SetIntensity(3000.f);
 	GlowLight->SetLightColor(FLinearColor(0.5f, 0.8f, 1.0f)); // Blue-white glow
 	GlowLight->SetAttenuationRadius(400.f);
+}
+
+void ATartariaResourceNode::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// ── Resource Type Visual Differentiation ─────────────────
+	if (ResourceMesh)
+	{
+		// Different scale and color per resource type
+		if (ResourceType == ETartariaResourceType::Iron)
+		{
+			ResourceMesh->SetRelativeScale3D(FVector(1.2f, 0.8f, 0.6f));  // angular, flat
+			if (GlowLight) GlowLight->SetLightColor(FLinearColor(0.8f, 0.4f, 0.2f));  // orange-red
+		}
+		else if (ResourceType == ETartariaResourceType::Stone)
+		{
+			ResourceMesh->SetRelativeScale3D(FVector(1.0f, 1.0f, 0.7f));  // round, squat
+			if (GlowLight) GlowLight->SetLightColor(FLinearColor(0.6f, 0.6f, 0.5f));  // warm gray
+		}
+		else if (ResourceType == ETartariaResourceType::Knowledge)
+		{
+			ResourceMesh->SetRelativeScale3D(FVector(0.6f, 0.6f, 1.4f));  // tall, thin (book shape)
+			if (GlowLight) GlowLight->SetLightColor(FLinearColor(0.3f, 0.5f, 1.0f));  // blue
+		}
+		else if (ResourceType == ETartariaResourceType::Crystal)
+		{
+			ResourceMesh->SetRelativeScale3D(FVector(0.5f, 0.5f, 1.6f));  // tall spiky
+			if (GlowLight) GlowLight->SetLightColor(FLinearColor(0.8f, 0.2f, 0.9f));  // purple
+		}
+	}
 }
 
 void ATartariaResourceNode::Tick(float DeltaTime)
@@ -63,6 +97,11 @@ void ATartariaResourceNode::OnInteract_Implementation(APlayerController* Interac
 
 	UE_LOG(LogTemp, Log, TEXT("TartariaResourceNode: Harvested %d, remaining %d/%d"),
 		Gathered, RemainingYield, MaxYield);
+
+	UTartariaSoundManager::PlayHarvest(this);
+
+	// Visual harvest feedback — floating orbs rise from node
+	SpawnHarvestEffect();
 
 	// Fire Blueprint event
 	OnHarvested(Gathered, RemainingYield);
@@ -150,6 +189,95 @@ void ATartariaResourceNode::SendHarvestRequest(APlayerController* Interactor)
 	});
 
 	GI->ApiClient->Post(TEXT("/api/game/harvest"), BodyStr, CB);
+}
+
+// -------------------------------------------------------
+// Environmental Effects — Harvest Particles
+// -------------------------------------------------------
+
+void ATartariaResourceNode::SpawnHarvestEffect()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	FVector BaseLoc = GetActorLocation() + FVector(0.f, 0.f, 50.f);
+
+	// Spawn 3-5 small orbs that float upward
+	int32 OrbCount = FMath::RandRange(3, 5);
+	for (int32 i = 0; i < OrbCount; ++i)
+	{
+		FVector Offset(
+			FMath::RandRange(-30.f, 30.f),
+			FMath::RandRange(-30.f, 30.f),
+			FMath::RandRange(0.f, 20.f)
+		);
+
+		AActor* Orb = World->SpawnActor<AActor>(AActor::StaticClass(), BaseLoc + Offset);
+		if (!Orb) continue;
+
+		UStaticMeshComponent* OrbMesh = NewObject<UStaticMeshComponent>(Orb);
+		OrbMesh->RegisterComponent();
+		Orb->SetRootComponent(OrbMesh);
+
+		UStaticMesh* SphereSM = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere"));
+		if (SphereSM) OrbMesh->SetStaticMesh(SphereSM);
+
+		OrbMesh->SetWorldScale3D(FVector(0.05f));
+		OrbMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+		// Color based on resource type enum
+		FLinearColor OrbColor(0.3f, 0.8f, 0.4f);  // Default green (organic)
+		switch (ResourceType)
+		{
+		case ETartariaResourceType::Crystal:
+			OrbColor = FLinearColor(0.5f, 0.3f, 0.9f);  // Purple for crystals
+			break;
+		case ETartariaResourceType::Iron:
+			OrbColor = FLinearColor(0.6f, 0.55f, 0.5f);  // Grey for metals
+			break;
+		case ETartariaResourceType::Stone:
+			OrbColor = FLinearColor(0.5f, 0.45f, 0.35f);  // Warm stone brown
+			break;
+		case ETartariaResourceType::Knowledge:
+			OrbColor = FLinearColor(0.3f, 0.5f, 1.0f);  // Blue for knowledge
+			break;
+		}
+
+		UMaterialInstanceDynamic* DynMat = OrbMesh->CreateAndSetMaterialInstanceDynamic(0);
+		if (DynMat)
+		{
+			DynMat->SetVectorParameterValue(TEXT("Color"), OrbColor);
+			DynMat->SetVectorParameterValue(TEXT("EmissiveColor"), OrbColor * 3.f);
+		}
+
+		// Add a small glow
+		UPointLightComponent* Glow = NewObject<UPointLightComponent>(Orb);
+		Glow->RegisterComponent();
+		Glow->SetupAttachment(OrbMesh);
+		Glow->SetIntensity(500.f);
+		Glow->SetAttenuationRadius(50.f);
+		Glow->SetLightColor(OrbColor);
+		Glow->SetCastShadows(false);
+
+		Orb->SetLifeSpan(1.5f);
+
+		// Float upward using timer
+		TWeakObjectPtr<AActor> WeakOrb(Orb);
+		float Speed = FMath::RandRange(80.f, 150.f);
+		FTimerHandle FloatTimer;
+		World->GetTimerManager().SetTimer(FloatTimer, [WeakOrb, Speed]()
+		{
+			AActor* O = WeakOrb.Get();
+			if (O)
+			{
+				FVector Loc = O->GetActorLocation();
+				O->SetActorLocation(Loc + FVector(0.f, 0.f, Speed * 0.033f));
+				// Shrink slightly as it rises
+				FVector Scale = O->GetActorScale3D() * 0.97f;
+				O->SetActorScale3D(Scale);
+			}
+		}, 0.033f, true);
+	}
 }
 
 void ATartariaResourceNode::Respawn()

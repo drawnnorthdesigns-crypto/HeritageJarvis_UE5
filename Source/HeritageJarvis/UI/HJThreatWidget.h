@@ -71,7 +71,13 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "HJ|Threat")
 	void OnResultShown(const FTartariaEncounterResult& Result);
 
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+
 private:
+	/** Fade animation state. */
+	float FadeAlpha = 0.f;
+	int32 FadeDir = 0;  // 0=idle, +1=fading in, -1=fading out
+
 	void BuildProgrammaticLayout();
 
 	UFUNCTION()

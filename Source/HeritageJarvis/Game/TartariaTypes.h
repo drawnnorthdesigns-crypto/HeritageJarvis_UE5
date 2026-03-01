@@ -7,6 +7,30 @@
  * Shared struct definitions for the Tartaria open world.
  */
 
+/** Biome zone types — used by ambient audio, VFX, and world systems. */
+UENUM(BlueprintType)
+enum class ETartariaBiome : uint8
+{
+	Clearinghouse  UMETA(DisplayName = "Clearinghouse"),
+	Scriptorium    UMETA(DisplayName = "Scriptorium"),
+	MonolithWard   UMETA(DisplayName = "Monolith Ward"),
+	ForgeDistrict  UMETA(DisplayName = "Forge District"),
+	VoidReach      UMETA(DisplayName = "Void Reach")
+};
+
+/** NPC specialist types — each has unique dialogue context. */
+UENUM(BlueprintType)
+enum class ETartariaSpecialist : uint8
+{
+	Steward        UMETA(DisplayName = "Steward"),
+	ForgeMaster    UMETA(DisplayName = "Forge Master"),
+	Scribe         UMETA(DisplayName = "Scribe"),
+	Alchemist      UMETA(DisplayName = "Alchemist"),
+	WarCaptain     UMETA(DisplayName = "War Captain"),
+	Surveyor       UMETA(DisplayName = "Surveyor"),
+	Governor       UMETA(DisplayName = "Governor"),
+};
+
 /** Biome zone definition — synced from Flask backend. */
 USTRUCT(BlueprintType)
 struct FTartariaBiomeZone
@@ -251,4 +275,107 @@ struct FTartariaMiningSummary
 
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Mining")
 	int32 AsteroidsScanned = 0;
+};
+
+// -------------------------------------------------------
+// Solar System / Transit types
+// -------------------------------------------------------
+
+/** Player flight state for transit between celestial bodies. */
+UENUM(BlueprintType)
+enum class EFlightState : uint8
+{
+	OnFoot       UMETA(DisplayName = "On Foot"),
+	Docked       UMETA(DisplayName = "Docked at Station"),
+	Supercruise  UMETA(DisplayName = "Supercruise"),
+	Orbital      UMETA(DisplayName = "Orbital Flight")
+};
+
+/** Celestial body data — mirrors Python solar_system.py BODIES. */
+USTRUCT(BlueprintType)
+struct FTartariaCelestialBody
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Solar")
+	FString BodyKey;  // "earth", "mars", "jupiter", etc.
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Solar")
+	FString BodyType;  // "Star", "Planet", "Moon", "Mining Region"
+
+	/** Mass in kg (double precision stored as two floats for UE4 compat). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Solar")
+	double MassKg = 0.0;
+
+	/** Body radius in km. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Solar")
+	double RadiusKm = 0.0;
+
+	/** Orbital radius in AU from parent body. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Solar")
+	double OrbitalRadiusAU = 0.0;
+
+	/** Orbital period in Earth days. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Solar")
+	double OrbitalPeriodDays = 0.0;
+
+	/** Surface gravity in m/s^2. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Solar")
+	float SurfaceGravity = 0.f;
+
+	/** Escape velocity in m/s. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Solar")
+	float EscapeVelocity = 0.f;
+
+	/** Whether body has atmosphere. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Solar")
+	bool bHasAtmosphere = false;
+
+	/** Current orbital angle in radians (updated by simulation). */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Solar")
+	double CurrentAngleRad = 0.0;
+};
+
+/** Transit request — sent to Python /api/game/transit/start. */
+USTRUCT(BlueprintType)
+struct FTartariaTransitRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, Category = "Tartaria|Transit")
+	FString OriginBody;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Tartaria|Transit")
+	FString DestinationBody;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Tartaria|Transit")
+	FString TransferType = TEXT("hohmann");  // hohmann, direct, brachistochrone
+};
+
+/** Transit status — returned by Python /api/game/transit/status. */
+USTRUCT(BlueprintType)
+struct FTartariaTransitStatus
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Transit")
+	bool bInTransit = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Transit")
+	FString OriginBody;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Transit")
+	FString DestinationBody;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Transit")
+	float ProgressFraction = 0.f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Transit")
+	float DeltaVRequired = 0.f;  // m/s
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Transit")
+	float TransitTimeSec = 0.f;  // Real-time seconds for game-compressed transit
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Transit")
+	float ElapsedSec = 0.f;
 };

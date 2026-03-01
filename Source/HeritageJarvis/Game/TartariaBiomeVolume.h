@@ -7,11 +7,16 @@
 
 class USphereComponent;
 class UPostProcessComponent;
+class UAudioComponent;
+class UParticleSystemComponent;
 
 /**
  * ATartariaBiomeVolume — Placed in level to define biome zone boundaries.
  * Each biome has unique post-processing atmosphere and collision detection.
  * On zone entry, calls /api/game/threat/check to determine if an encounter triggers.
+ *
+ * Post-process settings are configured per-biome via ConfigureBiomeAtmosphere(),
+ * providing distinct color grading, bloom, vignette, and fog tint per zone.
  */
 UCLASS()
 class HERITAGEJARVIS_API ATartariaBiomeVolume : public AActor
@@ -38,6 +43,20 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|Biome")
 	UPostProcessComponent* BiomePostProcess;
+
+	/** Ambient audio component for zone atmosphere */
+	UPROPERTY(VisibleAnywhere, Category = "Atmosphere")
+	UAudioComponent* AmbientAudio;
+
+	/** Particle system for zone ambiance (dust, embers, void sparks) */
+	UPROPERTY(VisibleAnywhere, Category = "Atmosphere")
+	UParticleSystemComponent* AmbientParticles;
+
+	/**
+	 * Apply biome-specific post-process settings based on BiomeKey.
+	 * Call this AFTER setting BiomeKey (WorldPopulator does this after spawn).
+	 */
+	void ConfigureBiomeAtmosphere();
 
 	// -------------------------------------------------------
 	// Threat detection (Phase 2)

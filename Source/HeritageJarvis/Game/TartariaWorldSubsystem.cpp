@@ -1,12 +1,19 @@
 #include "TartariaWorldSubsystem.h"
 #include "TartariaQuestMarker.h"
+#include "TartariaEnemyActor.h"
+#include "TartariaBiomeVolume.h"
+#include "TartariaForgeBuilding.h"
 #include "Core/HJGameInstance.h"
 #include "Core/HJApiClient.h"
+#include "Core/HJWebSocketClient.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Kismet/GameplayStatics.h"
+#include "Async/Async.h"
 
 void UTartariaWorldSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -57,6 +64,13 @@ void UTartariaWorldSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	// Initial sync
 	SyncWithBackend();
+
+	// Subscribe to WebSocket events for real-time updates
+	UHJGameInstance* GI = UHJGameInstance::Get(GetWorld());
+	if (GI && GI->WebSocketClient)
+	{
+		GI->WebSocketClient->OnMessage.AddDynamic(this, &UTartariaWorldSubsystem::OnWebSocketMessage);
+	}
 }
 
 void UTartariaWorldSubsystem::Deinitialize()
@@ -67,7 +81,20 @@ void UTartariaWorldSubsystem::Deinitialize()
 
 void UTartariaWorldSubsystem::Tick(float DeltaTime)
 {
-	// Periodic backend sync
+	// When SSE stream is active, skip polling — state comes via push.
+	// Only the game tick still fires (it's a write operation, not a read).
+	if (bUseSSE)
+	{
+		TickTimer += DeltaTime;
+		if (TickTimer >= TickIntervalSec)
+		{
+			TickTimer = 0.f;
+			ExecuteGameTick();
+		}
+		return;
+	}
+
+	// Fallback: poll-based updates when SSE is not connected
 	SyncTimer += DeltaTime;
 	if (SyncTimer >= SyncIntervalSec)
 	{
@@ -75,7 +102,6 @@ void UTartariaWorldSubsystem::Tick(float DeltaTime)
 		SyncWithBackend();
 	}
 
-	// Periodic inventory poll
 	InventoryTimer += DeltaTime;
 	if (InventoryTimer >= InventoryPollSec)
 	{
@@ -83,7 +109,6 @@ void UTartariaWorldSubsystem::Tick(float DeltaTime)
 		PollInventory();
 	}
 
-	// Periodic game tick
 	TickTimer += DeltaTime;
 	if (TickTimer >= TickIntervalSec)
 	{
@@ -91,12 +116,18 @@ void UTartariaWorldSubsystem::Tick(float DeltaTime)
 		ExecuteGameTick();
 	}
 
-	// Periodic strategic status poll (fleet, tech, mining)
 	StrategicTimer += DeltaTime;
 	if (StrategicTimer >= StrategicPollSec)
 	{
 		StrategicTimer = 0.f;
 		PollStrategicStatus();
+	}
+
+	ConsequencePollTimer += DeltaTime;
+	if (ConsequencePollTimer >= ConsequencePollSec)
+	{
+		ConsequencePollTimer = 0.f;
+		PollWorldConsequences();
 	}
 }
 
@@ -418,5 +449,301 @@ void UTartariaWorldSubsystem::ParseStrategicStatus(const FString& JsonBody)
 		Mining.AsteroidsScanned = static_cast<int32>(Scanned);
 	}
 
+	// Process threat data for enemy spawning
+	const TSharedPtr<FJsonObject>* ThreatObj;
+	if (Root->TryGetObjectField(TEXT("threat_engine"), ThreatObj))
+	{
+		ProcessThreatData(*ThreatObj);
+	}
+
 	OnGameStateUpdated.Broadcast();
+}
+
+// -------------------------------------------------------
+// Enemy Spawning & Combat
+// -------------------------------------------------------
+
+void UTartariaWorldSubsystem::SpawnEnemyFromThreat(const FString& InEnemyName, int32 Power, int32 InDifficulty, int32 Reward, const FString& InScenarioKey)
+{
+	// Clean up dead weak pointers first
+	ActiveEnemies.RemoveAll([](const TWeakObjectPtr<ATartariaEnemyActor>& E) { return !E.IsValid(); });
+
+	// Don't spawn too many enemies at once
+	if (ActiveEnemies.Num() >= 3) return;
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	ACharacter* Player = UGameplayStatics::GetPlayerCharacter(World, 0);
+	if (!Player) return;
+
+	// Spawn 800-1200cm in front of the player, on the ground
+	FVector PlayerLoc = Player->GetActorLocation();
+	FVector PlayerFwd = Player->GetActorForwardVector();
+	float SpawnDist = FMath::RandRange(800.f, 1200.f);
+	float SpawnAngle = FMath::RandRange(-30.f, 30.f);
+	FVector SpawnOffset = PlayerFwd.RotateAngleAxis(SpawnAngle, FVector::UpVector) * SpawnDist;
+	FVector SpawnLoc = PlayerLoc + SpawnOffset;
+	SpawnLoc.Z = PlayerLoc.Z;  // same ground level
+
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+	ATartariaEnemyActor* Enemy = World->SpawnActor<ATartariaEnemyActor>(
+		ATartariaEnemyActor::StaticClass(), SpawnLoc, FRotator::ZeroRotator, Params);
+
+	if (Enemy)
+	{
+		Enemy->EnemyName = InEnemyName;
+		Enemy->EnemyPower = Power;
+		Enemy->Difficulty = InDifficulty;
+		Enemy->RewardCredits = Reward;
+		Enemy->ScenarioKey = InScenarioKey;
+		ActiveEnemies.Add(Enemy);
+
+		UE_LOG(LogTemp, Log, TEXT("TartariaWorld: Spawned enemy '%s' (Power=%d, Diff=%d) near player"),
+			*InEnemyName, Power, InDifficulty);
+	}
+}
+
+void UTartariaWorldSubsystem::ProcessThreatData(const TSharedPtr<FJsonObject>& ThreatJson)
+{
+	if (!ThreatJson.IsValid()) return;
+
+	// Check if there's an active threat level
+	int32 ThreatLevel = 0;
+	ThreatJson->TryGetNumberField(TEXT("threat_level"), ThreatLevel);
+	if (ThreatLevel <= 0) return;
+
+	FString EnemyName = TEXT("Unknown Threat");
+	ThreatJson->TryGetStringField(TEXT("active_threat"), EnemyName);
+
+	int32 Difficulty = FMath::Clamp(ThreatLevel, 1, 10);
+	int32 Power = Difficulty * 15;
+	int32 Reward = Difficulty * 100;
+
+	SpawnEnemyFromThreat(EnemyName, Power, Difficulty, Reward, TEXT(""));
+}
+
+void UTartariaWorldSubsystem::ResolveCombatWithNearestEnemy(bool bPlayerWins)
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	ACharacter* Player = UGameplayStatics::GetPlayerCharacter(World, 0);
+	if (!Player) return;
+
+	// Find nearest active enemy
+	ATartariaEnemyActor* Nearest = nullptr;
+	float MinDist = MAX_FLT;
+
+	for (auto& WeakEnemy : ActiveEnemies)
+	{
+		ATartariaEnemyActor* Enemy = WeakEnemy.Get();
+		if (Enemy && !Enemy->bInCombat && !Enemy->bDefeated)
+		{
+			float Dist = FVector::Dist(Player->GetActorLocation(), Enemy->GetActorLocation());
+			if (Dist < MinDist)
+			{
+				MinDist = Dist;
+				Nearest = Enemy;
+			}
+		}
+	}
+
+	if (Nearest && MinDist < 1500.f)
+	{
+		Nearest->BeginCombatChoreography(bPlayerWins);
+	}
+}
+
+// -------------------------------------------------------
+// WebSocket Message Handler
+// -------------------------------------------------------
+
+void UTartariaWorldSubsystem::OnWebSocketMessage(const FString& Channel, const FString& Payload)
+{
+	if (Channel == TEXT("game"))
+	{
+		// Parse game state update immediately (no 30s wait)
+		TSharedPtr<FJsonObject> Json;
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Payload);
+		if (FJsonSerializer::Deserialize(Reader, Json) && Json.IsValid())
+		{
+			// Check for combat results
+			FString EventType;
+			if (Json->TryGetStringField(TEXT("event"), EventType))
+			{
+				if (EventType == TEXT("combat_result"))
+				{
+					FString Outcome;
+					if (Json->TryGetStringField(TEXT("outcome"), Outcome))
+					{
+						bool bWin = (Outcome == TEXT("VICTORY"));
+						ResolveCombatWithNearestEnemy(bWin);
+					}
+				}
+			}
+		}
+	}
+	else if (Channel == TEXT("pipeline"))
+	{
+		// Pipeline status -- update forge building progress
+		UE_LOG(LogTemp, Verbose, TEXT("WorldSubsystem: Pipeline WS update received"));
+	}
+}
+
+// -------------------------------------------------------
+// World Consequences — Visual Zone Modifiers
+// -------------------------------------------------------
+
+void UTartariaWorldSubsystem::PollWorldConsequences()
+{
+	UHJGameInstance* GI = UHJGameInstance::Get(GetWorld());
+	if (!GI || !GI->ApiClient) return;
+
+	TWeakObjectPtr<UTartariaWorldSubsystem> WeakThis(this);
+	FOnApiResponse CB;
+	CB.BindLambda([WeakThis](bool bOk, const FString& Body)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, bOk, Body]()
+		{
+			UTartariaWorldSubsystem* Self = WeakThis.Get();
+			if (!Self || !bOk) return;
+
+			TSharedPtr<FJsonObject> Json;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Body);
+			if (FJsonSerializer::Deserialize(Reader, Json) && Json.IsValid())
+			{
+				Self->ApplyZoneVisualModifiers(Json);
+			}
+		});
+	});
+
+	GI->ApiClient->Get(TEXT("/api/game/world-consequences/visual"), CB);
+}
+
+void UTartariaWorldSubsystem::ApplyZoneVisualModifiers(const TSharedPtr<FJsonObject>& ModifiersJson)
+{
+	if (!ModifiersJson.IsValid()) return;
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	// Iterate all biome volumes and apply visual modifiers per zone
+	for (TActorIterator<ATartariaBiomeVolume> It(World); It; ++It)
+	{
+		ATartariaBiomeVolume* Volume = *It;
+		if (!Volume) continue;
+
+		FString ZoneKey = Volume->BiomeKey;
+
+		const TSharedPtr<FJsonObject>* ZoneMods = nullptr;
+		if (!ModifiersJson->TryGetObjectField(ZoneKey, ZoneMods))
+		{
+			// Try lowercase variant
+			if (!ModifiersJson->TryGetObjectField(ZoneKey.ToLower(), ZoneMods))
+			{
+				continue;
+			}
+		}
+
+		if (!ZoneMods || !(*ZoneMods).IsValid()) continue;
+		if (!Volume->BiomePostProcess) continue;
+
+		FPostProcessSettings& PP = Volume->BiomePostProcess->Settings;
+
+		// ── Fog modifications ──
+		double FogReduction = 0.0;
+		double FogIncrease = 0.0;
+		(*ZoneMods)->TryGetNumberField(TEXT("fog_reduction"), FogReduction);
+		(*ZoneMods)->TryGetNumberField(TEXT("fog_increase"), FogIncrease);
+
+		if (FogReduction > 0)
+		{
+			// Reduce bloom intensity to simulate clearer air
+			PP.bOverride_BloomIntensity = true;
+			PP.BloomIntensity = FMath::Max(0.1f, PP.BloomIntensity * (1.0f - static_cast<float>(FogReduction)));
+
+			// Reduce vignette for more open feel
+			PP.bOverride_VignetteIntensity = true;
+			PP.VignetteIntensity = FMath::Max(0.0f, PP.VignetteIntensity * (1.0f - static_cast<float>(FogReduction)));
+		}
+		if (FogIncrease > 0)
+		{
+			// Increase bloom to simulate fog/haze
+			PP.bOverride_BloomIntensity = true;
+			PP.BloomIntensity = FMath::Min(2.0f, PP.BloomIntensity + static_cast<float>(FogIncrease));
+
+			// Darken exposure slightly for oppressive atmosphere
+			PP.bOverride_AutoExposureBias = true;
+			PP.AutoExposureBias -= static_cast<float>(FogIncrease) * 0.5f;
+		}
+
+		// ── Tint shift via ColorGain ──
+		FString TintShift;
+		if ((*ZoneMods)->TryGetStringField(TEXT("tint_shift"), TintShift))
+		{
+			PP.bOverride_ColorGain = true;
+
+			if (TintShift == TEXT("warm_gold"))
+				PP.ColorGain = FVector4(1.1f, 1.05f, 0.85f, 1.0f);
+			else if (TintShift == TEXT("sickly_green"))
+				PP.ColorGain = FVector4(0.8f, 1.1f, 0.7f, 1.0f);
+			else if (TintShift == TEXT("market_amber"))
+				PP.ColorGain = FVector4(1.15f, 1.0f, 0.8f, 1.0f);
+			else if (TintShift == TEXT("steel_blue"))
+				PP.ColorGain = FVector4(0.85f, 0.9f, 1.15f, 1.0f);
+			else if (TintShift == TEXT("ashen_grey"))
+				PP.ColorGain = FVector4(0.9f, 0.9f, 0.9f, 1.0f);
+		}
+
+		// ── Chromatic aberration ──
+		double ChromAb = 0.0;
+		if ((*ZoneMods)->TryGetNumberField(TEXT("chromatic_aberration"), ChromAb) && ChromAb > 0)
+		{
+			PP.bOverride_SceneFringeIntensity = true;
+			PP.SceneFringeIntensity = static_cast<float>(ChromAb) * 5.0f;
+		}
+
+		// ── Desaturation ──
+		double Desat = 0.0;
+		if ((*ZoneMods)->TryGetNumberField(TEXT("desaturation"), Desat) && Desat > 0)
+		{
+			float DesatF = static_cast<float>(Desat);
+			PP.bOverride_ColorSaturation = true;
+			PP.ColorSaturation = FVector4(1.0f - DesatF, 1.0f - DesatF, 1.0f - DesatF, 1.0f);
+		}
+
+		UE_LOG(LogTemp, Verbose, TEXT("WorldSubsystem: Applied visual mods to zone %s"), *ZoneKey);
+	}
+
+	// ── Update forge production visibility based on zone flags ──
+	// Check if FORGE_DISTRICT has any consequence flags that indicate
+	// active production (TRADE_HUB or FORTIFIED suggest economic activity)
+	for (TActorIterator<ATartariaForgeBuilding> ForgeIt(World); ForgeIt; ++ForgeIt)
+	{
+		ATartariaForgeBuilding* Forge = *ForgeIt;
+		if (!Forge) continue;
+
+		// Forge production state is already driven by pipeline polling
+		// via SetForgeActive(). Here we additionally activate forges
+		// in zones that have the TRADE_HUB consequence (economic activity).
+		const TSharedPtr<FJsonObject>* ForgeMods = nullptr;
+		if (ModifiersJson->TryGetObjectField(TEXT("FORGE_DISTRICT"), ForgeMods) ||
+			ModifiersJson->TryGetObjectField(TEXT("forge_district"), ForgeMods))
+		{
+			if (ForgeMods && (*ForgeMods).IsValid())
+			{
+				// If zone has trade hub or other activity indicators,
+				// boost forge production visibility
+				int32 AmbientNpcs = 0;
+				(*ForgeMods)->TryGetNumberField(TEXT("ambient_npcs"), AmbientNpcs);
+				if (AmbientNpcs > 0)
+				{
+					Forge->SetProductionActive(true);
+				}
+			}
+		}
+	}
 }

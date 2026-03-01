@@ -226,6 +226,9 @@ void UHJInventoryWidget::BuildProgrammaticLayout()
 void UHJInventoryWidget::ShowInventory()
 {
 	bIsOpen = true;
+	FadeAlpha = 0.f;
+	FadeDir = 1;
+	SetRenderOpacity(0.f);
 	SetVisibility(ESlateVisibility::Visible);
 	FetchInventory();
 	if (!bRecipesFetched)
@@ -237,7 +240,7 @@ void UHJInventoryWidget::ShowInventory()
 void UHJInventoryWidget::HideInventory()
 {
 	bIsOpen = false;
-	SetVisibility(ESlateVisibility::Collapsed);
+	FadeDir = -1;  // NativeTick will collapse when alpha reaches 0
 }
 
 void UHJInventoryWidget::OnCloseClicked()
@@ -607,6 +610,32 @@ void UHJInventoryWidget::RefreshRecipeList()
 			Slot->SetPadding(FMargin(8, 0, 8, 4));
 
 		Idx++;
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Fade transition
+// -----------------------------------------------------------------------------
+
+void UHJInventoryWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+
+	if (FadeDir != 0)
+	{
+		float Speed = FadeDir > 0 ? (1.f / 0.2f) : (1.f / 0.15f);
+		FadeAlpha = FMath::Clamp(FadeAlpha + FadeDir * Speed * InDeltaTime, 0.f, 1.f);
+		SetRenderOpacity(FadeAlpha);
+
+		if (FadeDir < 0 && FadeAlpha <= 0.f)
+		{
+			FadeDir = 0;
+			SetVisibility(ESlateVisibility::Collapsed);
+		}
+		else if (FadeDir > 0 && FadeAlpha >= 1.f)
+		{
+			FadeDir = 0;
+		}
 	}
 }
 

@@ -1,4 +1,7 @@
 #include "HJHUDWidget.h"
+#include "Core/HJGameInstance.h"
+#include "Game/HJInteractable.h"
+#include "EngineUtils.h"
 
 #include "Blueprint/WidgetTree.h"
 #include "Components/Overlay.h"
@@ -15,6 +18,7 @@
 #include "Components/ProgressBar.h"
 #include "Components/SizeBox.h"
 #include "Styling/CoreStyle.h"
+#include "Kismet/GameplayStatics.h"
 
 // -----------------------------------------------------------------------------
 // Programmatic layout
@@ -209,7 +213,7 @@ void UHJHUDWidget::BuildProgrammaticLayout()
 
     // --- Esc hint text ---
     EscHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("EscHintText"));
-    EscHintText->SetText(FText::FromString(TEXT("ESC: Menu | I: Inventory | G: Gov | F3: Debug")));
+    EscHintText->SetText(FText::FromString(TEXT("ESC: Menu | I: Inv | G: Gov | M: Star Map | F3: Debug")));
     EscHintText->SetColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)));
     {
         FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 10);
@@ -364,6 +368,47 @@ void UHJHUDWidget::BuildProgrammaticLayout()
     }
     HBox2->AddChild(HealthText);
     if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(HealthText->Slot))
+        Slot->SetVerticalAlignment(VAlign_Center);
+
+    // --- Spacer 12px (between health and stamina) ---
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpHpStam"));
+        Sp->SetSize(FVector2D(12, 0));
+        HBox2->AddChild(Sp);
+    }
+
+    // --- Stamina bar (100 x 12, green fill) ---
+    {
+        USizeBox* StamBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), FName("StaminaBarBox"));
+        StamBox->SetWidthOverride(100);
+        StamBox->SetHeightOverride(12);
+        HBox2->AddChild(StamBox);
+        if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(StamBox->Slot))
+            Slot->SetVerticalAlignment(VAlign_Center);
+
+        StaminaBar = WidgetTree->ConstructWidget<UProgressBar>(UProgressBar::StaticClass(), FName("StaminaBar"));
+        StaminaBar->SetPercent(1.0f);
+        StaminaBar->SetFillColorAndOpacity(FLinearColor(0.2f, 0.8f, 0.3f));  // green
+        StamBox->AddChild(StaminaBar);
+    }
+
+    // --- Spacer 6px ---
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpStamText"));
+        Sp->SetSize(FVector2D(6, 0));
+        HBox2->AddChild(Sp);
+    }
+
+    // --- Stamina text ---
+    StaminaText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("StaminaText"));
+    StaminaText->SetText(FText::FromString(TEXT("100/100")));
+    StaminaText->SetColorAndOpacity(FSlateColor(FLinearColor(0.3f, 0.9f, 0.4f)));  // green
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Bold", 10);
+        StaminaText->SetFont(Font);
+    }
+    HBox2->AddChild(StaminaText);
+    if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(StaminaText->Slot))
         Slot->SetVerticalAlignment(VAlign_Center);
 
     // --- Right spacer 12px ---
@@ -562,6 +607,201 @@ void UHJHUDWidget::BuildProgrammaticLayout()
         USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpFacRight"));
         Sp->SetSize(FVector2D(12, 0));
         HBox3->AddChild(Sp);
+    }
+
+    // =====================================================================
+    // Last Saved indicator — bottom-right corner
+    // =====================================================================
+
+    LastSavedText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("LastSavedText"));
+    LastSavedText->SetText(FText::FromString(TEXT("Last sealed: --")));
+    LastSavedText->SetColorAndOpacity(FSlateColor(FLinearColor(0.4f, 0.4f, 0.4f, 0.6f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 10);
+        LastSavedText->SetFont(Font);
+    }
+
+    UCanvasPanelSlot* SavedSlot = Root->AddChildToCanvas(LastSavedText);
+    if (SavedSlot)
+    {
+        // Bottom-right anchor
+        SavedSlot->SetAnchors(FAnchors(1.0f, 1.0f, 1.0f, 1.0f));
+        SavedSlot->SetOffsets(FMargin(-200.0f, -30.0f, 0.0f, 0.0f));
+        SavedSlot->SetAlignment(FVector2D(0.0f, 0.0f));
+    }
+
+    // =====================================================================
+    // Compass bar (Phase 3) — top center
+    // =====================================================================
+    CompassText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("CompassText"));
+    CompassText->SetText(FText::FromString(TEXT("N --- NE --- E --- SE --- S --- SW --- W --- NW --- N")));
+    CompassText->SetColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f, 0.7f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 11);
+        CompassText->SetFont(Font);
+    }
+
+    UCanvasPanelSlot* CompassSlot = Root->AddChildToCanvas(CompassText);
+    if (CompassSlot)
+    {
+        // Top center
+        CompassSlot->SetAnchors(FAnchors(0.5f, 0.0f, 0.5f, 0.0f));
+        CompassSlot->SetOffsets(FMargin(-150.0f, 4.0f, 300.0f, 20.0f));
+        CompassSlot->SetAlignment(FVector2D(0.0f, 0.0f));
+    }
+
+    // =====================================================================
+    // Quest Tracker (Phase 3) — top right
+    // =====================================================================
+    {
+        UVerticalBox* QuestBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), FName("QuestBox"));
+
+        QuestTitleText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("QuestTitleText"));
+        QuestTitleText->SetText(FText::GetEmpty());
+        QuestTitleText->SetColorAndOpacity(FSlateColor(FLinearColor(0.78f, 0.63f, 0.30f)));  // gold
+        {
+            FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Bold", 11);
+            QuestTitleText->SetFont(Font);
+        }
+        QuestBox->AddChild(QuestTitleText);
+
+        QuestObjectiveText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("QuestObjectiveText"));
+        QuestObjectiveText->SetText(FText::GetEmpty());
+        QuestObjectiveText->SetColorAndOpacity(FSlateColor(FLinearColor(0.7f, 0.7f, 0.7f)));
+        {
+            FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 10);
+            QuestObjectiveText->SetFont(Font);
+        }
+        QuestBox->AddChild(QuestObjectiveText);
+
+        UCanvasPanelSlot* QuestSlot = Root->AddChildToCanvas(QuestBox);
+        if (QuestSlot)
+        {
+            // Top right corner
+            QuestSlot->SetAnchors(FAnchors(1.0f, 0.0f, 1.0f, 0.0f));
+            QuestSlot->SetOffsets(FMargin(-250.0f, 95.0f, 240.0f, 40.0f));
+            QuestSlot->SetAlignment(FVector2D(0.0f, 0.0f));
+        }
+    }
+
+    // =====================================================================
+    // Zone Toast (Phase 3) — center screen, fades out
+    // =====================================================================
+    ZoneToastText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("ZoneToastText"));
+    ZoneToastText->SetText(FText::GetEmpty());
+    ZoneToastText->SetColorAndOpacity(FSlateColor(FLinearColor(0.78f, 0.63f, 0.30f, 0.0f)));  // starts invisible
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Bold", 18);
+        ZoneToastText->SetFont(Font);
+    }
+    ZoneToastText->SetVisibility(ESlateVisibility::Collapsed);
+
+    UCanvasPanelSlot* ZoneSlot = Root->AddChildToCanvas(ZoneToastText);
+    if (ZoneSlot)
+    {
+        // Center screen
+        ZoneSlot->SetAnchors(FAnchors(0.5f, 0.35f, 0.5f, 0.35f));
+        ZoneSlot->SetOffsets(FMargin(-200.0f, 0.0f, 400.0f, 30.0f));
+        ZoneSlot->SetAlignment(FVector2D(0.0f, 0.0f));
+    }
+
+    // =====================================================================
+    // Minimap (top-right)
+    // =====================================================================
+    {
+        MinimapBg = WidgetTree->ConstructWidget<UBorder>(
+            UBorder::StaticClass(), FName("MinimapBg"));
+        MinimapBg->SetBrushColor(FLinearColor(0.03f, 0.03f, 0.06f, 0.85f));
+        MinimapBg->SetPadding(FMargin(2));
+        UCanvasPanelSlot* MmSlot = Root->AddChildToCanvas(MinimapBg);
+        if (MmSlot)
+        {
+            MmSlot->SetAnchors(FAnchors(1.0f, 0.0f, 1.0f, 0.0f));
+            MmSlot->SetAlignment(FVector2D(1.0f, 0.0f));
+            MmSlot->SetOffsets(FMargin(-10, 10, 150, 150));
+        }
+
+        // Canvas inside minimap for positioning dots
+        MinimapCanvas = WidgetTree->ConstructWidget<UCanvasPanel>(
+            UCanvasPanel::StaticClass(), FName("MinimapCanvas"));
+        MinimapBg->AddChild(MinimapCanvas);
+
+        // North indicator
+        MinimapNorth = WidgetTree->ConstructWidget<UTextBlock>(
+            UTextBlock::StaticClass(), FName("MinimapN"));
+        MinimapNorth->SetText(FText::FromString(TEXT("N")));
+        MinimapNorth->SetColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.85f, 0.6f)));
+        FSlateFontInfo NFont = FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 10);
+        MinimapNorth->SetFont(NFont);
+        UCanvasPanelSlot* NSlot = MinimapCanvas->AddChildToCanvas(MinimapNorth);
+        if (NSlot)
+        {
+            NSlot->SetAnchors(FAnchors(0.5f, 0.0f, 0.5f, 0.0f));
+            NSlot->SetAlignment(FVector2D(0.5f, 0.0f));
+            NSlot->SetOffsets(FMargin(0, 2, 0, 0));
+        }
+
+        // Player arrow (center dot, green)
+        MinimapPlayerArrow = WidgetTree->ConstructWidget<UBorder>(
+            UBorder::StaticClass(), FName("MinimapPlayer"));
+        MinimapPlayerArrow->SetBrushColor(FLinearColor(0.2f, 0.9f, 0.3f));
+        UCanvasPanelSlot* PSlot = MinimapCanvas->AddChildToCanvas(MinimapPlayerArrow);
+        if (PSlot)
+        {
+            PSlot->SetAnchors(FAnchors(0.5f, 0.5f, 0.5f, 0.5f));
+            PSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+            PSlot->SetOffsets(FMargin(0, 0, 8, 8));
+        }
+
+        // Pre-create dots for NPCs/buildings (up to 20)
+        for (int32 i = 0; i < 20; ++i)
+        {
+            FName DotName(*FString::Printf(TEXT("MmDot_%d"), i));
+            UBorder* Dot = WidgetTree->ConstructWidget<UBorder>(
+                UBorder::StaticClass(), DotName);
+            Dot->SetBrushColor(FLinearColor(0.5f, 0.5f, 0.5f, 0.0f));  // Hidden
+            UCanvasPanelSlot* DSlot = MinimapCanvas->AddChildToCanvas(Dot);
+            if (DSlot)
+            {
+                DSlot->SetAnchors(FAnchors(0.5f, 0.5f, 0.5f, 0.5f));
+                DSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+                DSlot->SetOffsets(FMargin(0, 0, 5, 5));
+            }
+            Dot->SetVisibility(ESlateVisibility::Collapsed);
+            MinimapDots.Add(Dot);
+        }
+
+        // Biome zone colored border
+        UBorder* MinimapBorder = WidgetTree->ConstructWidget<UBorder>(
+            UBorder::StaticClass(), FName("MinimapBorder"));
+        MinimapBorder->SetBrushColor(FLinearColor(0.3f, 0.25f, 0.15f, 0.6f));
+        MinimapBorder->SetPadding(FMargin(1));
+    }
+
+    // =====================================================================
+    // Interaction Prompt (center-bottom)
+    // =====================================================================
+    {
+        InteractPromptBg = WidgetTree->ConstructWidget<UBorder>(
+            UBorder::StaticClass(), FName("InteractBg"));
+        InteractPromptBg->SetBrushColor(FLinearColor(0.05f, 0.05f, 0.08f, 0.85f));
+        InteractPromptBg->SetPadding(FMargin(16, 8, 16, 8));
+        UCanvasPanelSlot* IPSlot = Root->AddChildToCanvas(InteractPromptBg);
+        if (IPSlot)
+        {
+            IPSlot->SetAnchors(FAnchors(0.5f, 0.75f, 0.5f, 0.75f));
+            IPSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+            IPSlot->SetAutoSize(true);
+        }
+
+        InteractPromptText = WidgetTree->ConstructWidget<UTextBlock>(
+            UTextBlock::StaticClass(), FName("InteractText"));
+        InteractPromptText->SetText(FText::FromString(TEXT("[E] Interact")));
+        InteractPromptText->SetColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.85f, 0.6f)));
+        FSlateFontInfo IFont = FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 14);
+        InteractPromptText->SetFont(IFont);
+        InteractPromptBg->AddChild(InteractPromptText);
+        InteractPromptBg->SetVisibility(ESlateVisibility::Collapsed);
     }
 }
 
@@ -772,6 +1012,101 @@ void UHJHUDWidget::SetHealthInfo(float InHealth, float InMaxHealth,
     OnHealthInfoUpdated();
 }
 
+void UHJHUDWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+    Super::NativeTick(MyGeometry, InDeltaTime);
+
+    // Update "Last sealed: Xs ago" display from GameInstance's LastSaveTime
+    if (LastSavedText)
+    {
+        UHJGameInstance* GI = UHJGameInstance::Get(this);
+        if (GI && GI->LastSaveTime.GetTicks() > 0)
+        {
+            LastSaveTime = GI->LastSaveTime;
+        }
+
+        if (LastSaveTime.GetTicks() > 0)
+        {
+            FTimespan Elapsed = FDateTime::Now() - LastSaveTime;
+            int32 Secs = FMath::FloorToInt(Elapsed.GetTotalSeconds());
+            FString TimeStr;
+            if (Secs < 60)
+                TimeStr = FString::Printf(TEXT("%ds ago"), Secs);
+            else if (Secs < 3600)
+                TimeStr = FString::Printf(TEXT("%dm ago"), Secs / 60);
+            else
+                TimeStr = FString::Printf(TEXT("%dh ago"), Secs / 3600);
+
+            LastSavedText->SetText(FText::FromString(FString::Printf(TEXT("Last sealed: %s"), *TimeStr)));
+
+            // Fade: bright after save, dim after 10s
+            float Alpha = (Secs < 10) ? 1.0f : 0.5f;
+            LastSavedText->SetColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f, Alpha)));
+        }
+    }
+
+    // ── Zone Toast Fade ──────────────────────────────────────
+    if (ZoneToastText && ZoneToastTimer > 0.f)
+    {
+        ZoneToastTimer -= InDeltaTime;
+        float Alpha = (ZoneToastTimer > 0.5f) ? 1.0f : (ZoneToastTimer / 0.5f);
+        ZoneToastText->SetColorAndOpacity(FSlateColor(FLinearColor(0.78f, 0.63f, 0.30f, Alpha)));
+        if (ZoneToastTimer <= 0.f)
+        {
+            ZoneToastText->SetVisibility(ESlateVisibility::Collapsed);
+        }
+    }
+
+    // ── Compass Update from Player Yaw ──────────────────────
+    if (CompassText)
+    {
+        APlayerController* PC = GetOwningPlayer();
+        if (PC)
+        {
+            SetCompassHeading(PC->GetControlRotation().Yaw);
+        }
+    }
+
+    // ── Minimap update (every 0.5s) ─────────────────────────
+    static float MinimapTimer = 0.f;
+    MinimapTimer += InDeltaTime;
+    if (MinimapTimer >= 0.5f)
+    {
+        MinimapTimer = 0.f;
+        UpdateMinimap();
+    }
+
+    // ── Interaction prompt (check for nearby interactables) ──
+    {
+        ACharacter* PC = UGameplayStatics::GetPlayerCharacter(this, 0);
+        if (PC)
+        {
+            bool bFoundInteractable = false;
+            UWorld* W = GetWorld();
+            if (W)
+            {
+                for (TActorIterator<AActor> It(W); It; ++It)
+                {
+                    if (It->GetClass()->ImplementsInterface(UHJInteractable::StaticClass()))
+                    {
+                        float D = FVector::Dist(PC->GetActorLocation(), It->GetActorLocation());
+                        if (D < 400.f)
+                        {
+                            FString Prompt = FString::Printf(TEXT("[E] %s"),
+                                *IHJInteractable::Execute_GetInteractPrompt(*It));
+                            ShowInteractPrompt(Prompt);
+                            bFoundInteractable = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!bFoundInteractable)
+                HideInteractPrompt();
+        }
+    }
+}
+
 void UHJHUDWidget::OnHealthInfoUpdated_Implementation()
 {
     if (HealthBar)
@@ -809,4 +1144,229 @@ void UHJHUDWidget::OnHealthInfoUpdated_Implementation()
         ZoneText->SetColorAndOpacity(FSlateColor(ZoneColor));
         ZoneText->SetText(FText::FromString(CachedZoneName));
     }
+}
+
+// -----------------------------------------------------------------------------
+// Stamina HUD
+// -----------------------------------------------------------------------------
+
+void UHJHUDWidget::SetStaminaInfo(float InStamina, float InMaxStamina)
+{
+    CachedStamina = InStamina;
+    CachedMaxStamina = InMaxStamina;
+    OnStaminaInfoUpdated();
+}
+
+void UHJHUDWidget::OnStaminaInfoUpdated_Implementation()
+{
+    if (StaminaBar)
+    {
+        float Pct = (CachedMaxStamina > 0.f) ? (CachedStamina / CachedMaxStamina) : 0.f;
+        StaminaBar->SetPercent(Pct);
+
+        // Color: green > 50%, yellow > 25%, red below
+        if (Pct > 0.5f)
+            StaminaBar->SetFillColorAndOpacity(FLinearColor(0.2f, 0.8f, 0.3f));
+        else if (Pct > 0.25f)
+            StaminaBar->SetFillColorAndOpacity(FLinearColor(0.9f, 0.8f, 0.1f));
+        else
+            StaminaBar->SetFillColorAndOpacity(FLinearColor(0.9f, 0.3f, 0.1f));
+    }
+
+    if (StaminaText)
+    {
+        StaminaText->SetText(FText::FromString(
+            FString::Printf(TEXT("%.0f/%.0f"), CachedStamina, CachedMaxStamina)));
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Phase 3: Compass
+// -----------------------------------------------------------------------------
+
+void UHJHUDWidget::SetCompassHeading(float Yaw)
+{
+    CurrentCompassYaw = Yaw;
+    if (!CompassText) return;
+
+    // Build compass string centered on current heading
+    static const TCHAR* Directions[] = {
+        TEXT("N"), TEXT("NE"), TEXT("E"), TEXT("SE"),
+        TEXT("S"), TEXT("SW"), TEXT("W"), TEXT("NW")
+    };
+    // Normalize yaw to 0-360
+    float NormYaw = FMath::Fmod(Yaw + 360.f, 360.f);
+    int32 CenterIdx = FMath::RoundToInt(NormYaw / 45.f) % 8;
+    // Show 5 directions centered on current heading
+    FString CompassStr;
+    for (int32 I = -2; I <= 2; I++)
+    {
+        int32 Idx = (CenterIdx + I + 8) % 8;
+        if (I != -2) CompassStr += TEXT("  ---  ");
+        CompassStr += Directions[Idx];
+    }
+    CompassText->SetText(FText::FromString(CompassStr));
+}
+
+// -----------------------------------------------------------------------------
+// Phase 3: Quest Tracker
+// -----------------------------------------------------------------------------
+
+void UHJHUDWidget::SetActiveQuest(const FString& QuestTitle, const FString& ObjectiveText, int32 Step, int32 TotalSteps)
+{
+    if (QuestTitleText)
+    {
+        QuestTitleText->SetText(FText::FromString(QuestTitle));
+        QuestTitleText->SetVisibility(QuestTitle.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
+    }
+    if (QuestObjectiveText)
+    {
+        FString ObjStr = FString::Printf(TEXT("[%d/%d] %s"), Step, TotalSteps, *ObjectiveText);
+        QuestObjectiveText->SetText(FText::FromString(ObjStr));
+        QuestObjectiveText->SetVisibility(ObjectiveText.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Phase 3: Zone Toast
+// -----------------------------------------------------------------------------
+
+void UHJHUDWidget::ShowZoneToast(const FString& ZoneName, int32 Difficulty)
+{
+    if (!ZoneToastText) return;
+    // Difficulty stars
+    FString Stars;
+    for (int32 I = 0; I < Difficulty; I++) Stars += TEXT("*");
+    ZoneToastText->SetText(FText::FromString(FString::Printf(TEXT("- %s %s -"), *ZoneName, *Stars)));
+    ZoneToastText->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+    ZoneToastText->SetColorAndOpacity(FSlateColor(FLinearColor(0.78f, 0.63f, 0.30f, 1.0f)));
+    ZoneToastTimer = 3.0f;  // Show for 3 seconds
+}
+
+// -----------------------------------------------------------------------------
+// Phase 2: Damage Direction
+// -----------------------------------------------------------------------------
+
+void UHJHUDWidget::ShowDamageDirection(float DirectionAngle, float Intensity)
+{
+    DamageDirectionAngle = DirectionAngle;
+    DamageDirectionIntensity = FMath::Clamp(Intensity, 0.2f, 1.0f);
+    DamageDirectionTimer = 1.5f;
+}
+
+// -----------------------------------------------------------------------------
+// Phase 3: Victory / Level-Up
+// -----------------------------------------------------------------------------
+
+void UHJHUDWidget::ShowVictoryFanfare(const FString& Message, int32 XPGained)
+{
+    VictoryMessage = FString::Printf(TEXT("VICTORY -- %s (+%d XP)"), *Message, XPGained);
+    VictoryTimer = 3.0f;
+}
+
+void UHJHUDWidget::ShowLevelUp(int32 NewLevel, const FString& Title)
+{
+    LevelUpLevel = NewLevel;
+    LevelUpTitle = Title;
+    LevelUpTimer = 4.0f;
+}
+
+// -----------------------------------------------------------------------------
+// Minimap
+// -----------------------------------------------------------------------------
+
+void UHJHUDWidget::UpdateMinimap()
+{
+    if (!MinimapCanvas) return;
+
+    ACharacter* Player = UGameplayStatics::GetPlayerCharacter(this, 0);
+    if (!Player) return;
+
+    FVector PlayerLoc = Player->GetActorLocation();
+    float MapRange = 5000.f;  // 50m radius shown on minimap
+
+    // Find all NPCs and buildings in range
+    int32 DotIndex = 0;
+    UWorld* World = GetWorld();
+    if (!World) return;
+
+    for (TActorIterator<AActor> It(World); It; ++It)
+    {
+        if (DotIndex >= MinimapDots.Num()) break;
+
+        AActor* Actor = *It;
+        if (Actor == Player) continue;
+
+        float Dist = FVector::Dist(Actor->GetActorLocation(), PlayerLoc);
+        if (Dist > MapRange) continue;
+
+        // Determine dot color by actor class name
+        FLinearColor DotColor(0.5f, 0.5f, 0.5f);
+        bool bShow = false;
+
+        FString ClassName = Actor->GetClass()->GetName();
+        if (ClassName.Contains(TEXT("NPC")))
+        {
+            DotColor = FLinearColor(0.9f, 0.85f, 0.3f);  // Gold for NPCs
+            bShow = true;
+        }
+        else if (ClassName.Contains(TEXT("Forge")) || ClassName.Contains(TEXT("Building")))
+        {
+            DotColor = FLinearColor(0.4f, 0.6f, 0.9f);  // Blue for buildings
+            bShow = true;
+        }
+        else if (ClassName.Contains(TEXT("Resource")))
+        {
+            DotColor = FLinearColor(0.3f, 0.8f, 0.4f);  // Green for resources
+            bShow = true;
+        }
+        else if (ClassName.Contains(TEXT("Enemy")))
+        {
+            DotColor = FLinearColor(0.9f, 0.2f, 0.2f);  // Red for enemies
+            bShow = true;
+        }
+
+        if (!bShow) continue;
+
+        UBorder* Dot = MinimapDots[DotIndex];
+        Dot->SetBrushColor(DotColor);
+        Dot->SetVisibility(ESlateVisibility::Visible);
+
+        // Position relative to player
+        FVector Delta = Actor->GetActorLocation() - PlayerLoc;
+        float NormX = FMath::Clamp(Delta.X / MapRange, -1.f, 1.f) * 0.4f + 0.5f;
+        float NormY = FMath::Clamp(Delta.Y / MapRange, -1.f, 1.f) * 0.4f + 0.5f;
+
+        UCanvasPanelSlot* DSlot = Cast<UCanvasPanelSlot>(Dot->Slot);
+        if (DSlot)
+        {
+            DSlot->SetAnchors(FAnchors(NormX, NormY, NormX, NormY));
+        }
+
+        DotIndex++;
+    }
+
+    // Hide unused dots
+    for (int32 i = DotIndex; i < MinimapDots.Num(); ++i)
+    {
+        MinimapDots[i]->SetVisibility(ESlateVisibility::Collapsed);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Interaction Prompt
+// -----------------------------------------------------------------------------
+
+void UHJHUDWidget::ShowInteractPrompt(const FString& Prompt)
+{
+    if (InteractPromptBg)
+        InteractPromptBg->SetVisibility(ESlateVisibility::Visible);
+    if (InteractPromptText)
+        InteractPromptText->SetText(FText::FromString(Prompt));
+}
+
+void UHJHUDWidget::HideInteractPrompt()
+{
+    if (InteractPromptBg)
+        InteractPromptBg->SetVisibility(ESlateVisibility::Collapsed);
 }

@@ -1,6 +1,7 @@
 #include "HJPauseWidget.h"
 #include "Core/HJGameInstance.h"
 #include "Core/HJApiClient.h"
+#include "HJNotificationWidget.h"
 #include "GameFramework/GameModeBase.h"
 #include "Kismet/GameplayStatics.h"
 #include "Dom/JsonObject.h"
@@ -37,6 +38,9 @@ void UHJPauseWidget::NativeOnInitialized()
     if (ExistingRoot && ExistingRoot->GetChildrenCount() > 0) return;
 
     BuildProgrammaticLayout();
+
+    // Start with fade-in when first shown
+    PlayFadeIn();
 }
 
 void UHJPauseWidget::BuildProgrammaticLayout()
@@ -236,6 +240,44 @@ void UHJPauseWidget::BuildProgrammaticLayout()
         SpBtns2->SetSize(FVector2D(12, 0));
         BtnRow->AddChild(SpBtns2);
 
+        // Save button (golden accent — "Seal Chronicle")
+        SaveBtn = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), FName("SaveBtn"));
+        SaveBtn->SetBackgroundColor(FLinearColor(0.6f, 0.45f, 0.1f));
+        {
+            UTextBlock* BtnLabel = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("SaveBtnLabel"));
+            BtnLabel->SetText(FText::FromString(TEXT("Save")));
+            BtnLabel->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 1.0f, 1.0f)));
+            FSlateFontInfo BtnFont = FCoreStyle::GetDefaultFontStyle("Regular", 14);
+            BtnLabel->SetFont(BtnFont);
+            SaveBtn->AddChild(BtnLabel);
+        }
+        BtnRow->AddChild(SaveBtn);
+        SaveBtn->OnClicked.AddDynamic(this, &UHJPauseWidget::OnSaveBtnClicked);
+
+        // Spacer 12px
+        USpacer* SpBtns3 = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpBtns3"));
+        SpBtns3->SetSize(FVector2D(12, 0));
+        BtnRow->AddChild(SpBtns3);
+
+        // Load button (blue accent — "Unseal Chronicle")
+        LoadBtn = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), FName("LoadBtn"));
+        LoadBtn->SetBackgroundColor(FLinearColor(0.15f, 0.35f, 0.55f));
+        {
+            UTextBlock* BtnLabel = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("LoadBtnLabel"));
+            BtnLabel->SetText(FText::FromString(TEXT("Load")));
+            BtnLabel->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 1.0f, 1.0f)));
+            FSlateFontInfo BtnFont = FCoreStyle::GetDefaultFontStyle("Regular", 14);
+            BtnLabel->SetFont(BtnFont);
+            LoadBtn->AddChild(BtnLabel);
+        }
+        BtnRow->AddChild(LoadBtn);
+        LoadBtn->OnClicked.AddDynamic(this, &UHJPauseWidget::OnLoadBtnClicked);
+
+        // Spacer 12px
+        USpacer* SpBtns4 = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpBtns4"));
+        SpBtns4->SetSize(FVector2D(12, 0));
+        BtnRow->AddChild(SpBtns4);
+
         // Main Menu button (dark background)
         MainMenuBtn = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), FName("MainMenuBtn"));
         MainMenuBtn->SetBackgroundColor(FLinearColor(0.25f, 0.25f, 0.3f));
@@ -250,6 +292,39 @@ void UHJPauseWidget::BuildProgrammaticLayout()
         BtnRow->AddChild(MainMenuBtn);
         MainMenuBtn->OnClicked.AddDynamic(this, &UHJPauseWidget::OnMainMenuBtnClicked);
     }
+}
+
+// -----------------------------------------------------------------------------
+// Fade transition
+// -----------------------------------------------------------------------------
+
+void UHJPauseWidget::PlayFadeIn()
+{
+	FadeAlpha = 0.f;
+	FadeDir = 1;
+	SetRenderOpacity(0.f);
+}
+
+void UHJPauseWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+	Super::NativeTick(MyGeometry, InDeltaTime);
+
+	if (FadeDir != 0)
+	{
+		float Speed = FadeDir > 0 ? (1.f / 0.2f) : (1.f / 0.15f);
+		FadeAlpha = FMath::Clamp(FadeAlpha + FadeDir * Speed * InDeltaTime, 0.f, 1.f);
+		SetRenderOpacity(FadeAlpha);
+
+		if (FadeDir > 0 && FadeAlpha >= 1.f)
+		{
+			FadeDir = 0;
+		}
+		else if (FadeDir < 0 && FadeAlpha <= 0.f)
+		{
+			FadeDir = 0;
+			SetVisibility(ESlateVisibility::Collapsed);
+		}
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -353,7 +428,50 @@ void UHJPauseWidget::ResumeGame()
 
 void UHJPauseWidget::ReturnToMainMenu()
 {
+    // Auto-save before returning to main menu
+    UHJGameInstance* GI = UHJGameInstance::Get(this);
+    if (GI) GI->SaveGameState();
+
     UGameplayStatics::OpenLevel(this, FName(TEXT("MainMenu")));
+}
+
+void UHJPauseWidget::OnSaveBtnClicked()
+{
+    UHJGameInstance* GI = UHJGameInstance::Get(this);
+    if (GI)
+    {
+        GI->SaveGameState();
+        UHJNotificationWidget::Toast(TEXT("Chronicle sealed"), EHJNotifType::Success, 2.0f);
+    }
+}
+
+void UHJPauseWidget::OnLoadBtnClicked()
+{
+    UHJGameInstance* GI = UHJGameInstance::Get(this);
+    if (!GI || !GI->ApiClient) return;
+
+    TWeakObjectPtr<UHJPauseWidget> WeakThis(this);
+
+    FOnApiResponse CB;
+    CB.BindLambda([WeakThis](bool bOk, const FString& Body)
+    {
+        if (!bOk)
+        {
+            UHJNotificationWidget::Toast(TEXT("Load failed — Flask offline"), EHJNotifType::Error, 3.0f);
+            return;
+        }
+        UHJNotificationWidget::Toast(TEXT("Chronicle restored"), EHJNotifType::Success, 2.0f);
+
+        UHJPauseWidget* Self = WeakThis.Get();
+        if (Self)
+        {
+            UHJGameInstance* GI = UHJGameInstance::Get(Self);
+            if (GI) GI->LoadGameState();
+            Self->ResumeGame();
+        }
+    });
+
+    GI->ApiClient->Post(TEXT("/api/game/load"), TEXT("{\"slot\":\"auto\"}"), CB);
 }
 
 void UHJPauseWidget::SendQuickChat(const FString& Message)

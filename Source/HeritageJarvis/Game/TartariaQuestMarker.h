@@ -2,17 +2,20 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "HJInteractable.h"
 #include "TartariaQuestMarker.generated.h"
 
 class UStaticMeshComponent;
 class UPointLightComponent;
+class UCapsuleComponent;
 
 /**
- * ATartariaQuestMarker — Quest/event markers spawned by WorldSubsystem.
+ * ATartariaQuestMarker — Quest/event markers spawned by WorldPopulator.
  * Floating mesh with light indicator and bob animation.
+ * Implements IHJInteractable — on interact, advances quest via Flask backend.
  */
 UCLASS()
-class HERITAGEJARVIS_API ATartariaQuestMarker : public AActor
+class HERITAGEJARVIS_API ATartariaQuestMarker : public AActor, public IHJInteractable
 {
 	GENERATED_BODY()
 
@@ -20,6 +23,13 @@ public:
 	ATartariaQuestMarker();
 
 	virtual void Tick(float DeltaTime) override;
+
+	// -------------------------------------------------------
+	// IHJInteractable
+	// -------------------------------------------------------
+
+	virtual void OnInteract_Implementation(APlayerController* Interactor) override;
+	virtual FString GetInteractPrompt_Implementation() const override;
 
 	// -------------------------------------------------------
 	// Properties
@@ -41,6 +51,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Quest")
 	bool bActive = true;
 
+	/** Current quest step (0 = not started, increments on interact). */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Quest")
+	int32 CurrentStep = 0;
+
 	// -------------------------------------------------------
 	// Methods
 	// -------------------------------------------------------
@@ -52,6 +66,16 @@ public:
 	void CompleteQuest();
 
 	// -------------------------------------------------------
+	// Delegates
+	// -------------------------------------------------------
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnQuestInteracted,
+		const FString&, QuestId, int32, Step);
+
+	UPROPERTY(BlueprintAssignable, Category = "Tartaria|Quest")
+	FOnQuestInteracted OnQuestInteractedDelegate;
+
+	// -------------------------------------------------------
 	// Blueprint events
 	// -------------------------------------------------------
 
@@ -60,6 +84,9 @@ public:
 
 	UFUNCTION(BlueprintImplementableEvent, Category = "Tartaria|Quest")
 	void OnQuestCompleted();
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Tartaria|Quest")
+	void OnQuestAdvanced(int32 NewStep);
 
 	// -------------------------------------------------------
 	// Components
@@ -71,6 +98,9 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|Quest")
 	UPointLightComponent* MarkerLight;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|Quest")
+	UCapsuleComponent* InteractCapsule;
+
 	/** Bob animation amplitude in UE units. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Quest")
 	float BobAmplitude = 30.f;
@@ -80,6 +110,9 @@ public:
 	float BobSpeed = 1.5f;
 
 private:
+	void SendAdvanceRequest();
+	void OnAdvanceResponse(bool bSuccess, const FString& Body);
+
 	float BobTimer = 0.f;
 	FVector InitialLocation;
 };

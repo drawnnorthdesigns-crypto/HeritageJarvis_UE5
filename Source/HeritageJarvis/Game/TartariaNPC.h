@@ -2,15 +2,19 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
+#include "Components/TextRenderComponent.h"
 #include "HJInteractable.h"
+#include "TartariaTypes.h"
 #include "TartariaNPC.generated.h"
 
 class UStaticMeshComponent;
+class UPointLightComponent;
 
 /**
  * ATartariaNPC — Faction NPC in the Tartaria world.
  * Implements IHJInteractable for player dialogue.
  * OnInteract sends player message to Flask /api/game/npc/dialogue with NPC persona.
+ * Supports streaming dialogue via SSE for typewriter effect.
  */
 UCLASS()
 class HERITAGEJARVIS_API ATartariaNPC : public ACharacter, public IHJInteractable
@@ -19,6 +23,9 @@ class HERITAGEJARVIS_API ATartariaNPC : public ACharacter, public IHJInteractabl
 
 public:
 	ATartariaNPC();
+
+	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaTime) override;
 
 	// -------------------------------------------------------
 	// IHJInteractable
@@ -43,16 +50,49 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|NPC")
 	FString DialogueEndpoint = TEXT("/api/game/npc/dialogue");
 
+	/** NPC specialist type — determines dialogue context and sim module routing. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|NPC")
+	ETartariaSpecialist SpecialistType = ETartariaSpecialist::Steward;
+
 	/** System prompt persona for LLM dialogue. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|NPC", meta = (MultiLine = true))
 	FString PersonaPrompt = TEXT("You are a wise steward of Tartaria. Speak with authority about engineering and construction.");
 
 	// -------------------------------------------------------
-	// Components
+	// Components — Compound Primitive Humanoid
 	// -------------------------------------------------------
 
+	/** Torso — box body (primary attachment point). */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|NPC")
-	UStaticMeshComponent* BodyMesh;
+	UStaticMeshComponent* BodyTorso;
+
+	/** Head — sphere on top of torso. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|NPC")
+	UStaticMeshComponent* BodyHead;
+
+	/** Left arm — cylinder. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|NPC")
+	UStaticMeshComponent* BodyArmL;
+
+	/** Right arm — cylinder. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|NPC")
+	UStaticMeshComponent* BodyArmR;
+
+	/** Left leg — cylinder. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|NPC")
+	UStaticMeshComponent* BodyLegL;
+
+	/** Right leg — cylinder. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|NPC")
+	UStaticMeshComponent* BodyLegR;
+
+	/** Type-specific accessory (staff, flask, tome, etc.). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|NPC")
+	UStaticMeshComponent* Accessory;
+
+	/** Floating name tag rendered above the NPC head. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|NPC")
+	UTextRenderComponent* NameTag;
 
 	// -------------------------------------------------------
 	// Blueprint events
@@ -79,16 +119,78 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Tartaria|NPC")
 	FOnNPCDialogueStarted OnDialogueStartedDelegate;
 
-	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNPCDialogueReceived, const FString&, NPCName, const FString&, ResponseText);
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnNPCDialogueReceived, const FString&, NPCName, const FString&, ResponseText, const TArray<FString>&, Actions);
 
 	UPROPERTY(BlueprintAssignable, Category = "Tartaria|NPC")
 	FOnNPCDialogueReceived OnDialogueReceivedDelegate;
+
+	/** Per-token streaming delegate for typewriter effect. */
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNPCDialogueToken, const FString&, NPCName, const FString&, Token);
+
+	UPROPERTY(BlueprintAssignable, Category = "Tartaria|NPC")
+	FOnNPCDialogueToken OnDialogueTokenDelegate;
 
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNPCDialogueErrored, const FString&, NPCName);
 
 	UPROPERTY(BlueprintAssignable, Category = "Tartaria|NPC")
 	FOnNPCDialogueErrored OnDialogueErroredDelegate;
 
+	/** Map specialist enum to Flask API string key. */
+	FString GetSpecialistString() const;
+
+	/** Apply specialist-specific colors and spawn accessory.
+	 *  Called automatically in BeginPlay, but can also be called
+	 *  externally (e.g. by WorldPopulator) after setting SpecialistType post-spawn. */
+	void ApplySpecialistAppearance();
+
+	/** Spawn environmental props around the NPC. */
+	void SpawnWorkshopProps();
+
+	/** Workshop prop actors (for cleanup). */
+	TArray<TWeakObjectPtr<AActor>> WorkshopProps;
+
+	/** Play a gesture animation for an NPC action (e.g., forging, reading, analyzing). */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|NPC")
+	void PlayActionGesture(const FString& ActionType);
+
+	/** Is currently playing a gesture? */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|NPC")
+	bool bPlayingGesture = false;
+
+	// ── Mood System ─────────────────────────────────────────
+	/** Current mood level: 0=neutral, 1=happy, 2=busy, -1=displeased */
+	UPROPERTY(BlueprintReadWrite, Category = "Tartaria|NPC")
+	int32 MoodLevel = 0;
+
+	/** Set NPC mood (called after dialogue/action results). */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|NPC")
+	void SetMood(int32 NewMood);
+
 private:
 	void SendDialogueRequest(APlayerController* Interactor, const FString& PlayerMessage);
+
+	/** Apply a solid color to a static mesh component via dynamic material instance. */
+	static void ApplyColorToMesh(UStaticMeshComponent* Mesh, const FLinearColor& Color);
+
+	/** Idle animation accumulators. */
+	float BreathPhase = 0.f;
+	float GestureTimer = 0.f;
+
+	/** Action gesture state. */
+	float ActionGestureTimer = 0.f;
+	float ActionGestureDuration = 2.0f;
+	FString CurrentGestureType;
+
+	/** Mood indicator light above head (color changes with mood). */
+	UPROPERTY()
+	UPointLightComponent* MoodLight = nullptr;
+
+	/** Idle variation timer. */
+	float IdleVariationTimer = 0.f;
+
+	/** Current idle variant index (0=default, 1-3=variants). */
+	int32 CurrentIdleVariant = 0;
+
+	/** Time until next idle switch. */
+	float NextIdleSwitchTime = 15.f;
 };

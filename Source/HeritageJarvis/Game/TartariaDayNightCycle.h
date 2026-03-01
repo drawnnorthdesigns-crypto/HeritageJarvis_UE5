@@ -5,13 +5,20 @@
 #include "TartariaDayNightCycle.generated.h"
 
 class ADirectionalLight;
+class AExponentialHeightFog;
+class USkyLightComponent;
 
 /**
- * ATartariaDayNightCycle — Controls sun rotation and sky lighting.
+ * ATartariaDayNightCycle — Controls sun rotation, sky lighting, fog, and atmosphere.
  * Place one in the TartariaWorld level, assign the DirectionalLight.
  *
  * Sun pitch: -90 (midnight) -> 0 (sunrise at 6h) -> 90 (noon) -> 0 (sunset) -> -90
  * DayLengthSeconds controls real-time length of one full game day.
+ *
+ * Also manages:
+ *   - SkyLight for ambient fill (prevents pitch-black shadows at night)
+ *   - ExponentialHeightFog (spawned at BeginPlay, color/density shifts with time)
+ *   - Sun color temperature (warm sunrise/sunset, cool noon, cold moonlight)
  */
 UCLASS()
 class HERITAGEJARVIS_API ATartariaDayNightCycle : public AActor
@@ -21,6 +28,7 @@ class HERITAGEJARVIS_API ATartariaDayNightCycle : public AActor
 public:
 	ATartariaDayNightCycle();
 
+	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
 
 	// -------------------------------------------------------
@@ -48,6 +56,18 @@ public:
 	float MinSunIntensity = 0.1f;
 
 	// -------------------------------------------------------
+	// Atmosphere components
+	// -------------------------------------------------------
+
+	/** Sky light for ambient fill lighting. Owned by this actor. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|DayNight")
+	USkyLightComponent* SkyLightComp;
+
+	/** Reference to the spawned fog actor. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|DayNight")
+	AExponentialHeightFog* FogActor;
+
+	// -------------------------------------------------------
 	// Read-only state
 	// -------------------------------------------------------
 
@@ -59,6 +79,56 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|DayNight")
 	float SunHeightNormalized = 0.5f;
 
+	// -------------------------------------------------------
+	// Star field + Aurora
+	// -------------------------------------------------------
+
+	/** Star visibility (0=hidden, 1=full brightness). Updated per tick. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|DayNight")
+	float StarVisibility = 0.f;
+
+	// -------------------------------------------------------
+	// Weather System
+	// -------------------------------------------------------
+
+	/** Current weather state */
+	UPROPERTY(BlueprintReadOnly, Category = "Weather")
+	FString CurrentWeather = TEXT("Clear");
+
+	/** Weather transition timer */
+	UPROPERTY(BlueprintReadOnly, Category = "Weather")
+	float WeatherIntensity = 0.0f;
+
+	UFUNCTION(BlueprintCallable, Category = "Weather")
+	void SetWeather(const FString& Weather, float TransitionTime = 5.0f);
+
 private:
+	FString TargetWeather = TEXT("Clear");
+	float WeatherTransitionTimer = 0.0f;
+	float WeatherTransitionDuration = 5.0f;
+	float WeatherChangeCountdown = 120.0f;  // seconds until random weather change
+
+	void UpdateWeather(float DeltaTime);
+	float GetWeatherFogMultiplier() const;
+
 	void UpdateSunPosition();
+	void UpdateAtmosphere();
+	void UpdateStarField();
+	void SpawnFogActor();
+	void SpawnStarField();
+
+	/** Lerp a color across 3 key-stops (dawn/noon/dusk/night). */
+	FLinearColor GetSkyColorForTime() const;
+	FLinearColor GetFogColorForTime() const;
+
+	/** Star field meshes (small emissive cubes). */
+	UPROPERTY()
+	TArray<UStaticMeshComponent*> StarMeshes;
+
+	/** Aurora light beams (colored point lights). */
+	UPROPERTY()
+	TArray<UPointLightComponent*> AuroraLights;
+
+	/** Aurora animation time. */
+	float AuroraTime = 0.f;
 };

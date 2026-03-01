@@ -1,18 +1,25 @@
 #include "HJGameInstance.h"
+#include "HJWebSocketClient.h"
 #include "HJSaveGame.h"
 #include "HJFlaskProcess.h"
+#include "TartariaSoundManager.h"
 #include "TimerManager.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
+#include "Game/TartariaWorldSubsystem.h"
+#include "Game/TartariaCharacter.h"
+#include "UI/HJNotificationWidget.h"
 
 void UHJGameInstance::Init()
 {
 	Super::Init();
 
 	// Create core systems
-	ApiClient    = NewObject<UHJApiClient>(this);
-	EventPoller  = NewObject<UHJEventPoller>(this);
-	FlaskProcess = NewObject<UHJFlaskProcess>(this);
+	ApiClient        = NewObject<UHJApiClient>(this);
+	EventPoller      = NewObject<UHJEventPoller>(this);
+	FlaskProcess     = NewObject<UHJFlaskProcess>(this);
+	GameEventStream  = NewObject<UHJGameEventStream>(this);
+	WebSocketClient  = NewObject<UHJWebSocketClient>(this);
 
 	// Load saved session — may override ApiClient->BaseUrl
 	LoadSession();
@@ -37,11 +44,17 @@ void UHJGameInstance::Init()
 
 void UHJGameInstance::Shutdown()
 {
+	// Disconnect WebSocket client
+	if (WebSocketClient)
+		WebSocketClient->Disconnect();
+
+	// Disconnect SSE stream
+	if (GameEventStream)
+		GameEventStream->Disconnect();
+
 	// Gracefully shut down Flask child process
 	if (FlaskProcess)
-	{
 		FlaskProcess->ShutdownFlask();
-	}
 
 	Super::Shutdown();
 }
@@ -71,6 +84,14 @@ void UHJGameInstance::OnHealthResponse(bool bSuccess, const FString& Body)
 			bFlaskReadyFired = true;
 			UE_LOG(LogTemp, Log, TEXT("HJGameInstance: Broadcasting OnFlaskReady"));
 			OnFlaskReady.Broadcast();
+
+			// Start SSE game event stream
+			if (GameEventStream && ApiClient)
+				GameEventStream->Connect(ApiClient);
+
+			// Connect WebSocket client for real-time events
+			if (WebSocketClient)
+				WebSocketClient->Connect();
 		}
 	}
 }
@@ -145,6 +166,199 @@ void UHJGameInstance::LoadSession()
 void UHJGameInstance::SetLastTab(const FString& TabName)
 {
 	if (SaveData) { SaveData->LastActiveTab = TabName; SaveSession(); }
+}
+
+// -------------------------------------------------------
+// Full game state save/load
+// -------------------------------------------------------
+
+void UHJGameInstance::SaveGameState()
+{
+	if (!SaveData)
+		SaveData = Cast<UHJSaveGame>(
+			UGameplayStatics::CreateSaveGameObject(UHJSaveGame::StaticClass()));
+	if (!SaveData) return;
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	// Capture WorldSubsystem state
+	UTartariaWorldSubsystem* WorldSub = World->GetSubsystem<UTartariaWorldSubsystem>();
+	if (WorldSub)
+	{
+		SaveData->Credits    = WorldSub->Credits;
+		SaveData->CurrentDay = WorldSub->CurrentDay;
+		SaveData->CurrentEra = WorldSub->CurrentEra;
+		SaveData->TimeOfDay  = WorldSub->TimeOfDay;
+
+		// Flatten inventory to resource counts
+		SaveData->Iron = 0; SaveData->Stone = 0;
+		SaveData->Knowledge = 0; SaveData->Crystal = 0;
+		for (const FTartariaInventoryItem& Item : WorldSub->Inventory)
+		{
+			if (Item.ItemId == TEXT("iron"))           SaveData->Iron += Item.Quantity;
+			else if (Item.ItemId == TEXT("stone"))     SaveData->Stone += Item.Quantity;
+			else if (Item.ItemId == TEXT("knowledge")) SaveData->Knowledge += Item.Quantity;
+			else if (Item.ItemId == TEXT("crystal"))   SaveData->Crystal += Item.Quantity;
+		}
+
+		// Faction reputations
+		SaveData->FactionKeys.Empty();
+		SaveData->FactionInfluences.Empty();
+		for (const FTartariaFactionInfo& F : WorldSub->Factions)
+		{
+			SaveData->FactionKeys.Add(F.FactionKey);
+			SaveData->FactionInfluences.Add(F.Influence);
+		}
+
+		// Fleet
+		SaveData->FleetTotalPower   = WorldSub->Fleet.TotalPower;
+		SaveData->FleetDeployedZones = WorldSub->Fleet.DeployedZones;
+
+		// Tech
+		SaveData->TechUnlockedCount = WorldSub->Tech.UnlockedCount;
+		SaveData->HighestTech       = WorldSub->Tech.HighestTech;
+
+		// Mining
+		SaveData->TotalMined       = WorldSub->Mining.TotalMined;
+		SaveData->AsteroidsScanned = WorldSub->Mining.AsteroidsScanned;
+	}
+
+	// Capture player state
+	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(World, 0);
+	ATartariaCharacter* PlayerChar = Cast<ATartariaCharacter>(PlayerPawn);
+	if (PlayerChar)
+	{
+		SaveData->LastTartariaLocation = PlayerChar->GetActorLocation();
+		SaveData->LastTartariaRotation = PlayerChar->GetActorRotation();
+		SaveData->PlayerHealth         = PlayerChar->CurrentHealth;
+		SaveData->PlayerBiome          = PlayerChar->CurrentBiome;
+		SaveData->CurrentCelestialBody = PlayerChar->CurrentBody;
+	}
+
+	// Persist session fields too
+	SaveData->FlaskBaseUrl          = ApiClient ? ApiClient->BaseUrl : TEXT("http://127.0.0.1:5000");
+	SaveData->LastActiveProjectId   = ActiveProjectId;
+	SaveData->LastActiveProjectName = ActiveProjectName;
+
+	bool bSlotSaved = UGameplayStatics::SaveGameToSlot(SaveData, UHJSaveGame::SlotName, UHJSaveGame::UserIndex);
+
+	// Toast + sound feedback for save
+	if (bSlotSaved)
+	{
+		UHJNotificationWidget::Toast(TEXT("Chronicle sealed"), EHJNotifType::Success, 2.0f);
+		LastSaveTime = FDateTime::Now();
+
+		// Play seal sound if assigned, otherwise use SoundManager fallback
+		if (SealSound)
+		{
+			UGameplayStatics::PlaySound2D(GetWorld(), SealSound, 0.5f);
+		}
+		else
+		{
+			UTartariaSoundManager::PlayForgeSeal(this);
+		}
+	}
+
+	// Also trigger Python backend save (persists sim state to disk)
+	if (ApiClient && bFlaskOnline)
+	{
+		FOnApiResponse SaveCB;
+		SaveCB.BindLambda([](bool bOk, const FString& Resp)
+		{
+			if (!bOk)
+			{
+				UHJNotificationWidget::Toast(TEXT("Flask archive unreachable"), EHJNotifType::Warning, 3.0f);
+			}
+			UE_LOG(LogTemp, Log, TEXT("HJGameInstance: Python save %s"),
+				bOk ? TEXT("succeeded") : TEXT("failed (Flask may be offline)"));
+		});
+		ApiClient->Post(TEXT("/api/game/save"), TEXT("{\"slot\":\"auto\"}"), SaveCB);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("HJGameInstance: Full game state saved (Credits=%d, Day=%d, Era=%s)"),
+		SaveData->Credits, SaveData->CurrentDay, *SaveData->CurrentEra);
+}
+
+void UHJGameInstance::LoadGameState()
+{
+	if (!SaveData) LoadSession();
+	if (!SaveData)
+	{
+		UHJNotificationWidget::Toast(TEXT("No chronicle found — starting fresh"), EHJNotifType::Warning, 3.0f);
+		return;
+	}
+
+	// Validate save data integrity
+	if (SaveData->Credits < 0 || SaveData->CurrentEra.IsEmpty())
+	{
+		UHJNotificationWidget::Toast(TEXT("Chronicle damaged — attempting recovery from backup"), EHJNotifType::Warning, 3.0f);
+		// Try loading from Python backup
+		if (ApiClient && bFlaskOnline)
+		{
+			FOnApiResponse RecoverCB;
+			RecoverCB.BindLambda([](bool bOk, const FString& Resp)
+			{
+				if (bOk)
+					UHJNotificationWidget::Toast(TEXT("Recovered from backup chronicle"), EHJNotifType::Success, 3.0f);
+				else
+					UHJNotificationWidget::Toast(TEXT("Recovery failed"), EHJNotifType::Error, 3.0f);
+			});
+			ApiClient->Post(TEXT("/api/game/recover"), TEXT("{}"), RecoverCB);
+		}
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	// Restore WorldSubsystem state
+	UTartariaWorldSubsystem* WorldSub = World->GetSubsystem<UTartariaWorldSubsystem>();
+	if (WorldSub)
+	{
+		WorldSub->Credits    = SaveData->Credits;
+		WorldSub->CurrentDay = SaveData->CurrentDay;
+		WorldSub->CurrentEra = SaveData->CurrentEra;
+		WorldSub->TimeOfDay  = SaveData->TimeOfDay;
+
+		// Restore faction reputations
+		WorldSub->Factions.Empty();
+		int32 FCount = FMath::Min(SaveData->FactionKeys.Num(), SaveData->FactionInfluences.Num());
+		for (int32 I = 0; I < FCount; I++)
+		{
+			FTartariaFactionInfo F;
+			F.FactionKey = SaveData->FactionKeys[I];
+			F.Influence  = SaveData->FactionInfluences[I];
+			WorldSub->Factions.Add(F);
+		}
+
+		// Restore fleet/tech/mining
+		WorldSub->Fleet.TotalPower   = SaveData->FleetTotalPower;
+		WorldSub->Fleet.DeployedZones = SaveData->FleetDeployedZones;
+		WorldSub->Tech.UnlockedCount = SaveData->TechUnlockedCount;
+		WorldSub->Tech.HighestTech   = SaveData->HighestTech;
+		WorldSub->Mining.TotalMined       = SaveData->TotalMined;
+		WorldSub->Mining.AsteroidsScanned = SaveData->AsteroidsScanned;
+
+		// Broadcast so HUD refreshes
+		WorldSub->OnGameStateUpdated.Broadcast();
+	}
+
+	// Restore player state
+	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(World, 0);
+	ATartariaCharacter* PlayerChar = Cast<ATartariaCharacter>(PlayerPawn);
+	if (PlayerChar)
+	{
+		if (!SaveData->LastTartariaLocation.IsZero())
+			PlayerChar->SetActorLocationAndRotation(
+				SaveData->LastTartariaLocation, SaveData->LastTartariaRotation);
+		PlayerChar->CurrentHealth = SaveData->PlayerHealth;
+		PlayerChar->CurrentBiome  = SaveData->PlayerBiome;
+		PlayerChar->CurrentBody   = SaveData->CurrentCelestialBody;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("HJGameInstance: Game state restored (Credits=%d, Day=%d, Era=%s)"),
+		SaveData->Credits, SaveData->CurrentDay, *SaveData->CurrentEra);
 }
 
 // -------------------------------------------------------

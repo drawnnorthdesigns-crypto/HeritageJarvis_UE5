@@ -24,7 +24,16 @@ private:
 	void SpawnDayNightCycle(UWorld* World);
 	void SpawnResourceNodes(UWorld* World);
 	void SpawnBuildings(UWorld* World);
+	void SpawnTerminals(UWorld* World);
 	void SpawnNPCs(UWorld* World);
+	void SpawnQuestMarkers(UWorld* World);
+	void SpawnAmbientSounds(UWorld* World);
+	void SpawnBiomeParticles(UWorld* World);
+	void SpawnTerrain(UWorld* World);
+	void SpawnInstancedWealth(UWorld* World);
+	void SpawnPatentRegistry(UWorld* World);
+	void SpawnAlchemicalScales(UWorld* World);
+	void SpawnFactionBanners(UWorld* World);
 
 	/** Returns true if an actor with the given tag already exists. */
 	bool HasActorWithTag(UWorld* World, FName Tag) const;

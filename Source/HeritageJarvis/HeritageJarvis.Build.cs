@@ -28,7 +28,12 @@ public class HeritageJarvis : ModuleRules
 			"SlateCore",
 			"HTTP",                   // For Flask API calls
 			"Json",                   // JSON parsing
-			"JsonUtilities"           // JSON helpers
+			"JsonUtilities",          // JSON helpers
+			"WebSockets",             // WebSocket client (HJWebSocketClient)
+			"ProceduralMeshComponent", // Runtime mesh generation (HJMeshLoader)
+			"Niagara",                // Niagara particle system (biome atmosphere)
+			"MeshDescription",        // FMeshDescription for Nanite conversion
+			"StaticMeshDescription"   // Static mesh attributes + builder
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

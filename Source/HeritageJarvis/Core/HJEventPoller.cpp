@@ -1,4 +1,5 @@
 #include "HJEventPoller.h"
+#include "HJVRAMManager.h"
 #include "UI/HJLoadingWidget.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
@@ -147,10 +148,14 @@ void UHJEventPoller::ParsePipelineResponse(bool bOk, const FString& Body, const 
             {
                 UHJLoadingWidget::Instance->ShowPipelineProgress(Stage, StageIndex, TotalStages);
             }
+            // VRAM management: drop rendering quality during heavy LLM/CadQuery generation
+            UHJVRAMManager::Get()->EnterLowPowerMode();
         }
         else
         {
             UHJLoadingWidget::Hide(nullptr);
+            // VRAM management: restore rendering quality when pipeline finishes
+            UHJVRAMManager::Get()->ExitLowPowerMode();
         }
     };
 

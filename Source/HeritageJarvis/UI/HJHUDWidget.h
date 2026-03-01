@@ -103,6 +103,9 @@ public:
     void SetHealthInfo(float InHealth, float InMaxHealth, const FString& InZone, int32 InDifficulty);
 
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void SetStaminaInfo(float InStamina, float InMaxStamina);
+
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
     void SetFactionInfo(const TArray<FTartariaFactionInfo>& InFactions);
 
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
@@ -113,6 +116,39 @@ public:
     /** Fix 3.5: Update the offline queue count badge */
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
     void SetQueueCount(int32 Count);
+
+    // -------------------------------------------------------
+    // Phase 2+3: Navigation UI + Combat Feedback
+    // -------------------------------------------------------
+
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void SetCompassHeading(float Yaw);
+
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void SetActiveQuest(const FString& QuestTitle, const FString& ObjectiveText, int32 Step, int32 TotalSteps);
+
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void ShowZoneToast(const FString& ZoneName, int32 Difficulty);
+
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void ShowDamageDirection(float DirectionAngle, float Intensity);
+
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void ShowVictoryFanfare(const FString& Message, int32 XPGained);
+
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void ShowLevelUp(int32 NewLevel, const FString& Title);
+
+    // -------------------------------------------------------
+    // Minimap + Interaction Prompt
+    // -------------------------------------------------------
+
+    /** Refresh the minimap with world data. */
+    void UpdateMinimap();
+
+    /** Show/hide the interaction prompt. */
+    void ShowInteractPrompt(const FString& Prompt);
+    void HideInteractPrompt();
 
     // -------------------------------------------------------
     // Blueprint events (BlueprintNativeEvent -- C++ default + BP override)
@@ -129,6 +165,9 @@ public:
 
     UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
     void OnHealthInfoUpdated();
+
+    UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
+    void OnStaminaInfoUpdated();
 
     UFUNCTION(BlueprintNativeEvent, Category = "HJ|HUD")
     void OnFactionInfoUpdated();
@@ -195,6 +234,17 @@ private:
     FString CachedZoneName;
     int32 CachedDifficulty = 1;
 
+    // Stamina bar widgets
+    UPROPERTY()
+    UProgressBar* StaminaBar = nullptr;
+
+    UPROPERTY()
+    UTextBlock* StaminaText = nullptr;
+
+    // Cached stamina state
+    float CachedStamina = 100.f;
+    float CachedMaxStamina = 100.f;
+
     // Faction bar widgets (Phase 4) — 4 factions
     UPROPERTY()
     TArray<UTextBlock*> FactionLabels;
@@ -220,4 +270,53 @@ private:
     FTartariaFleetSummary CachedFleet;
     FTartariaTechSummary CachedTech;
     FTartariaMiningSummary CachedMining;
+
+    // Last-saved indicator (Save/Load UX)
+    UPROPERTY()
+    UTextBlock* LastSavedText = nullptr;
+
+    FDateTime LastSaveTime;
+    float LastSavedFadeTimer = 0.f;
+
+    // ── Minimap ──────────────────────────────────────────────
+    UPROPERTY() UBorder* MinimapBg = nullptr;
+    UPROPERTY() UCanvasPanel* MinimapCanvas = nullptr;
+    UPROPERTY() UTextBlock* MinimapNorth = nullptr;
+    UPROPERTY() TArray<UBorder*> MinimapDots;
+    UPROPERTY() UBorder* MinimapPlayerArrow = nullptr;
+
+    // ── Interaction Prompt ───────────────────────────────────
+    UPROPERTY() UBorder* InteractPromptBg = nullptr;
+    UPROPERTY() UTextBlock* InteractPromptText = nullptr;
+
+    // Compass (Phase 3)
+    UPROPERTY()
+    UTextBlock* CompassText = nullptr;
+    float CurrentCompassYaw = 0.f;
+
+    // Quest tracker (Phase 3)
+    UPROPERTY()
+    UTextBlock* QuestTitleText = nullptr;
+    UPROPERTY()
+    UTextBlock* QuestObjectiveText = nullptr;
+
+    // Zone toast (Phase 3)
+    UPROPERTY()
+    UTextBlock* ZoneToastText = nullptr;
+    float ZoneToastTimer = 0.f;
+
+    // Damage direction (Phase 2)
+    float DamageDirectionAngle = 0.f;
+    float DamageDirectionIntensity = 0.f;
+    float DamageDirectionTimer = 0.f;
+
+    // Victory/Level-up overlay
+    float VictoryTimer = 0.f;
+    FString VictoryMessage;
+    float LevelUpTimer = 0.f;
+    int32 LevelUpLevel = 0;
+    FString LevelUpTitle;
+
+public:
+    virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 };

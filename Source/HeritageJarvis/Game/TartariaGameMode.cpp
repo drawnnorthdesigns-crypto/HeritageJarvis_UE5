@@ -8,6 +8,11 @@
 #include "EngineUtils.h"
 #include "Core/HJGameInstance.h"
 #include "Core/HJApiClient.h"
+#include "Core/HJGameEventStream.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonWriter.h"
+#include "Serialization/JsonSerializer.h"
+#include "Async/Async.h"
 #include "UI/HJHUDWidget.h"
 #include "UI/HJPauseWidget.h"
 #include "UI/HJNotificationWidget.h"
@@ -18,40 +23,55 @@
 #include "UI/HJInventoryWidget.h"
 #include "UI/HJDialogueWidget.h"
 #include "TartariaNPC.h"
+#include "TartariaForgeBuilding.h"
 #include "TartariaWorldPopulator.h"
+#include "TartariaQuestMarker.h"
+#include "TartariaSolarSystemManager.h"
+#include "TartariaLevelStreamManager.h"
+#include "TartariaRewardVFX.h"
 
 ATartariaGameMode::ATartariaGameMode()
 {
 	DefaultPawnClass = ATartariaCharacter::StaticClass();
 
-	// Auto-wire widget Blueprint classes by asset path
+	// Auto-wire widget Blueprint classes by asset path.
+	// If BP asset doesn't exist, fall back to native C++ class so
+	// widgets still spawn without requiring editor-created assets.
+
 	static ConstructorHelpers::FClassFinder<UHJHUDWidget> HUDFinder(
 		TEXT("/Game/UI/WBP_HUD"));
-	if (HUDFinder.Succeeded()) HUDWidgetClass = HUDFinder.Class;
+	HUDWidgetClass = HUDFinder.Succeeded()
+		? HUDFinder.Class : UHJHUDWidget::StaticClass();
 
 	static ConstructorHelpers::FClassFinder<UHJPauseWidget> PauseFinder(
 		TEXT("/Game/UI/WBP_Pause"));
-	if (PauseFinder.Succeeded()) PauseWidgetClass = PauseFinder.Class;
+	PauseWidgetClass = PauseFinder.Succeeded()
+		? PauseFinder.Class : UHJPauseWidget::StaticClass();
 
 	static ConstructorHelpers::FClassFinder<UHJNotificationWidget> NotifFinder(
 		TEXT("/Game/UI/WBP_Notifications"));
-	if (NotifFinder.Succeeded()) NotificationWidgetClass = NotifFinder.Class;
+	NotificationWidgetClass = NotifFinder.Succeeded()
+		? NotifFinder.Class : UHJNotificationWidget::StaticClass();
 
 	static ConstructorHelpers::FClassFinder<UHJDebugWidget> DebugFinder(
 		TEXT("/Game/UI/WBP_Debug"));
-	if (DebugFinder.Succeeded()) DebugWidgetClass = DebugFinder.Class;
+	DebugWidgetClass = DebugFinder.Succeeded()
+		? DebugFinder.Class : UHJDebugWidget::StaticClass();
 
 	static ConstructorHelpers::FClassFinder<UHJThreatWidget> ThreatFinder(
 		TEXT("/Game/UI/WBP_Threat"));
-	if (ThreatFinder.Succeeded()) ThreatWidgetClass = ThreatFinder.Class;
+	ThreatWidgetClass = ThreatFinder.Succeeded()
+		? ThreatFinder.Class : UHJThreatWidget::StaticClass();
 
 	static ConstructorHelpers::FClassFinder<UHJInventoryWidget> InvFinder(
 		TEXT("/Game/UI/WBP_Inventory"));
-	if (InvFinder.Succeeded()) InventoryWidgetClass = InvFinder.Class;
+	InventoryWidgetClass = InvFinder.Succeeded()
+		? InvFinder.Class : UHJInventoryWidget::StaticClass();
 
 	static ConstructorHelpers::FClassFinder<UHJDialogueWidget> DlgFinder(
 		TEXT("/Game/UI/WBP_Dialogue"));
-	if (DlgFinder.Succeeded()) DialogueWidgetClass = DlgFinder.Class;
+	DialogueWidgetClass = DlgFinder.Succeeded()
+		? DlgFinder.Class : UHJDialogueWidget::StaticClass();
 }
 
 void ATartariaGameMode::BeginPlay()
@@ -121,9 +141,35 @@ void ATartariaGameMode::BeginPlay()
 		);
 	}
 
+	// Spawn solar system manager
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+	SolarSystem = GetWorld()->SpawnActor<ATartariaSolarSystemManager>(
+		ATartariaSolarSystemManager::StaticClass(),
+		FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+
+	// Spawn level stream manager (handles body transitions, visual profiles)
+	FActorSpawnParameters LSMParams;
+	LSMParams.Owner = this;
+	LevelStreamManager = GetWorld()->SpawnActor<ATartariaLevelStreamManager>(
+		ATartariaLevelStreamManager::StaticClass(),
+		FVector::ZeroVector, FRotator::ZeroRotator, LSMParams);
+
 	// Populate world with biomes, resources, buildings, NPCs
 	WorldPopulator = NewObject<UTartariaWorldPopulator>(this);
 	WorldPopulator->PopulateWorld(GetWorld());
+
+	// Load latest forged model on all forge building pedestals
+	for (TActorIterator<ATartariaForgeBuilding> FIt(GetWorld()); FIt; ++FIt)
+	{
+		ATartariaForgeBuilding* ForgeB = *FIt;
+		if (ForgeB->BuildingType == ETartariaBuildingType::Forge)
+			ForgeB->LoadLatestForgedModel();
+	}
+
+	// Restore saved game state (credits, factions, fleet, etc.)
+	if (UHJGameInstance* GI2 = UHJGameInstance::Get(this))
+		GI2->LoadGameState();
 
 	// Subscribe to economy/tick delegates from WorldSubsystem
 	UTartariaWorldSubsystem* WorldSub = GetWorld()->GetSubsystem<UTartariaWorldSubsystem>();
@@ -131,6 +177,22 @@ void ATartariaGameMode::BeginPlay()
 	{
 		WorldSub->OnGameStateUpdated.AddDynamic(this, &ATartariaGameMode::OnGameStateUpdated);
 		WorldSub->OnTickCompleted.AddDynamic(this, &ATartariaGameMode::OnTickCompleted);
+	}
+
+	// Subscribe to SSE game event stream (replaces most polling)
+	if (UHJGameInstance* GI3 = UHJGameInstance::Get(this))
+	{
+		if (GI3->GameEventStream)
+		{
+			GI3->GameEventStream->OnSnapshotReceived.AddDynamic(
+				this, &ATartariaGameMode::OnSSESnapshotReceived);
+			GI3->GameEventStream->OnTickEventsReceived.AddDynamic(
+				this, &ATartariaGameMode::OnSSETickEvents);
+
+			// Enable SSE mode on WorldSubsystem if stream is connected
+			if (GI3->GameEventStream->bConnected && WorldSub)
+				WorldSub->bUseSSE = true;
+		}
 	}
 
 	// Spawn threat encounter widget (hidden, above HUD)
@@ -161,7 +223,13 @@ void ATartariaGameMode::BeginPlay()
 		DialogueWidget = CreateWidget<UHJDialogueWidget>(
 			UGameplayStatics::GetPlayerController(this, 0), DialogueWidgetClass);
 		if (DialogueWidget)
+		{
 			DialogueWidget->AddToViewport(22);
+
+			// Subscribe to action button clicks
+			DialogueWidget->OnActionSelected.AddDynamic(
+				this, &ATartariaGameMode::OnDialogueActionSelected);
+		}
 	}
 
 	// Subscribe to all BiomeVolume threat/zone delegates
@@ -169,6 +237,9 @@ void ATartariaGameMode::BeginPlay()
 
 	// Subscribe to all NPC dialogue delegates
 	SubscribeToNPCs();
+
+	// Subscribe to quest marker delegates
+	SubscribeToQuestMarkers();
 
 	// Subscribe to player health changes
 	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
@@ -199,6 +270,10 @@ void ATartariaGameMode::BeginPlay()
 
 void ATartariaGameMode::ReturnToMainMenu()
 {
+	// Auto-save full game state before leaving
+	if (UHJGameInstance* GI = UHJGameInstance::Get(this))
+		GI->SaveGameState();
+
 	// Show loading screen before level swap
 	UHJLoadingWidget::Show(this, TEXT("Returning to Heritage Jarvis…"));
 	UGameplayStatics::OpenLevel(this, FName(TEXT("MainMenu")));
@@ -213,6 +288,10 @@ void ATartariaGameMode::TogglePauseMenu()
 
 	if (bPauseMenuOpen)
 	{
+		// Auto-save game state when pausing
+		if (UHJGameInstance* GI = UHJGameInstance::Get(this))
+			GI->SaveGameState();
+
 		// Spawn pause widget if not already created
 		if (!PauseWidget && PauseWidgetClass)
 		{
@@ -277,13 +356,31 @@ void ATartariaGameMode::ToggleDashboardOverlay()
 			DashOverlayWidget->SetVisibility(ESlateVisibility::Visible);
 		}
 
+		// Holographic tilt — slight 3D perspective effect for immersion
+		// This gives the Tab-overlay a diegetic "projected hologram" feel
+		// rather than a flat 2D overlay that breaks immersion
+		if (DashOverlayWidget)
+		{
+			FWidgetTransform HoloTransform;
+			HoloTransform.Scale = FVector2D(0.92f, 0.92f);
+			HoloTransform.Shear = FVector2D(0.02f, 0.0f);
+			DashOverlayWidget->SetRenderTransform(HoloTransform);
+			DashOverlayWidget->SetRenderOpacity(0.92f);
+		}
+
 		PC->SetShowMouseCursor(true);
 		PC->SetInputMode(FInputModeGameAndUI());
 	}
 	else
 	{
 		if (DashOverlayWidget)
+		{
 			DashOverlayWidget->SetVisibility(ESlateVisibility::Collapsed);
+
+			// Reset holographic transform
+			DashOverlayWidget->SetRenderTransform(FWidgetTransform());
+			DashOverlayWidget->SetRenderOpacity(1.0f);
+		}
 
 		PC->SetShowMouseCursor(false);
 		PC->SetInputMode(FInputModeGameOnly());
@@ -337,10 +434,52 @@ void ATartariaGameMode::OnPipelineStatusUpdate(const FString& ProjectId,
 		PauseWidget->OnPipelineStatusUpdated();
 	}
 
-	// Toast on completion
+	// ── Forge Building: sync activity state + fire stage transitions ──
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		for (TActorIterator<ATartariaForgeBuilding> It(World); It; ++It)
+		{
+			ATartariaForgeBuilding* Forge = *It;
+			if (Forge->BuildingType == ETartariaBuildingType::Forge)
+			{
+				Forge->SetForgeActive(bActive, Stage);
+
+				// Detect stage transition
+				if (bActive && !Stage.IsEmpty() && Stage != Forge->CurrentForgeStage)
+				{
+					Forge->OnStageTransition(Stage, StageIndex);
+				}
+			}
+		}
+	}
+
+	// Toast on completion + materialization VFX + load model on pedestal
 	if (!bActive && !Stage.IsEmpty())
 	{
 		UHJNotificationWidget::Toast(TEXT("Pipeline complete!"), EHJNotifType::Success);
+
+		// Spawn materialization VFX at player location (CAD model ready)
+		APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
+		if (PlayerPawn)
+		{
+			ATartariaRewardVFX::SpawnRewardVFX(
+				this, PlayerPawn->GetActorLocation(),
+				ERewardVFXType::Materialization, 2.5f);
+		}
+
+		// Load the forged model onto all Forge building pedestals
+		if (World)
+		{
+			for (TActorIterator<ATartariaForgeBuilding> FIt(World); FIt; ++FIt)
+			{
+				ATartariaForgeBuilding* ForgeB = *FIt;
+				if (ForgeB->BuildingType == ETartariaBuildingType::Forge)
+				{
+					ForgeB->LoadLatestForgedModel();
+				}
+			}
+		}
 	}
 }
 
@@ -434,6 +573,23 @@ void ATartariaGameMode::OnTickCompleted(const TArray<FTartariaTickEvent>& Events
 		}
 
 		UHJNotificationWidget::Toast(Msg, NotifType, 4.0f);
+
+		// Spawn celebration VFX for significant events
+		APawn* EventPawn = UGameplayStatics::GetPlayerPawn(this, 0);
+		FVector VFXLoc = EventPawn ? EventPawn->GetActorLocation() : FVector::ZeroVector;
+
+		if (Evt.Type == TEXT("RAID_VICTORY"))
+		{
+			ATartariaRewardVFX::SpawnRewardVFX(this, VFXLoc, ERewardVFXType::CombatVictory, 2.5f);
+		}
+		else if (Evt.Type == TEXT("HABITABLE"))
+		{
+			ATartariaRewardVFX::SpawnRewardVFX(this, VFXLoc, ERewardVFXType::LevelUp, 3.0f);
+		}
+		else if (Evt.Type == TEXT("BOOK_COMPLETED"))
+		{
+			ATartariaRewardVFX::SpawnRewardVFX(this, VFXLoc, ERewardVFXType::QuestComplete, 2.0f);
+		}
 	}
 }
 
@@ -548,12 +704,23 @@ void ATartariaGameMode::OnEncounterResolved(const FTartariaEncounterResult& Resu
 		PC->SetInputMode(FInputModeGameOnly());
 	}
 
-	// Victory toast with credit reward
-	if (Result.bVictory && Result.RewardCredits > 0)
+	// Victory toast with credit reward + VFX celebration
+	if (Result.bVictory)
 	{
-		UHJNotificationWidget::Toast(
-			FString::Printf(TEXT("Victory! +%d credits"), Result.RewardCredits),
-			EHJNotifType::Success, 3.0f);
+		if (Result.RewardCredits > 0)
+		{
+			UHJNotificationWidget::Toast(
+				FString::Printf(TEXT("Victory! +%d credits"), Result.RewardCredits),
+				EHJNotifType::Success, 3.0f);
+		}
+
+		// Spawn combat victory VFX at player location
+		if (PlayerChar)
+		{
+			ATartariaRewardVFX::SpawnRewardVFX(
+				this, PlayerChar->GetActorLocation(),
+				ERewardVFXType::CombatVictory, 2.5f);
+		}
 	}
 }
 
@@ -619,12 +786,82 @@ void ATartariaGameMode::OnNPCDialogueStarted(const FString& NPCName, const FStri
 	}
 }
 
-void ATartariaGameMode::OnNPCDialogueReceived(const FString& NPCName, const FString& ResponseText)
+void ATartariaGameMode::OnNPCDialogueReceived(const FString& NPCName,
+	const FString& ResponseText, const TArray<FString>& Actions)
 {
 	if (DialogueWidget && DialogueWidget->bIsOpen)
 	{
-		DialogueWidget->SetResponse(ResponseText);
+		if (Actions.Num() > 0)
+			DialogueWidget->SetResponseWithActions(ResponseText, Actions);
+		else
+			DialogueWidget->SetResponse(ResponseText);
 	}
+}
+
+void ATartariaGameMode::OnDialogueActionSelected(const FString& ActionKey)
+{
+	UE_LOG(LogTemp, Log, TEXT("TartariaGameMode: Dialogue action selected: %s"), *ActionKey);
+
+	// Toast the action for player feedback
+	UHJNotificationWidget::Toast(
+		FString::Printf(TEXT("Executing: %s"), *ActionKey),
+		EHJNotifType::Info, 2.0f);
+
+	// Execute action via Flask API
+	UHJGameInstance* GI = UHJGameInstance::Get(this);
+	if (!GI || !GI->ApiClient) return;
+
+	// Find the current NPC's specialist type
+	FString SpecialistType = TEXT("steward");
+	if (DialogueWidget)
+	{
+		// Look up the NPC that is currently in dialogue
+		for (TActorIterator<ATartariaNPC> It(GetWorld()); It; ++It)
+		{
+			ATartariaNPC* NPC = *It;
+			if (NPC->NPCName == DialogueWidget->CurrentNPCName)
+			{
+				SpecialistType = NPC->GetSpecialistString();
+				break;
+			}
+		}
+	}
+
+	// Build action request JSON
+	TSharedPtr<FJsonObject> Body = MakeShareable(new FJsonObject());
+	Body->SetStringField(TEXT("specialist_type"), SpecialistType);
+	Body->SetStringField(TEXT("action"), ActionKey);
+	// Params left empty — backend uses defaults
+
+	FString BodyStr;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&BodyStr);
+	FJsonSerializer::Serialize(Body.ToSharedRef(), Writer);
+
+	TWeakObjectPtr<ATartariaGameMode> WeakThis(this);
+	FOnApiResponse CB;
+	CB.BindLambda([WeakThis, ActionKey](bool bOk, const FString& RespBody)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, bOk, ActionKey]()
+		{
+			ATartariaGameMode* Self = WeakThis.Get();
+			if (!Self) return;
+
+			if (bOk)
+			{
+				UHJNotificationWidget::Toast(
+					FString::Printf(TEXT("Action complete: %s"), *ActionKey),
+					EHJNotifType::Success, 2.0f);
+			}
+			else
+			{
+				UHJNotificationWidget::Toast(
+					FString::Printf(TEXT("Action failed: %s"), *ActionKey),
+					EHJNotifType::Error, 3.0f);
+			}
+		});
+	});
+
+	GI->ApiClient->Post(TEXT("/api/game/npc/action"), BodyStr, CB);
 }
 
 void ATartariaGameMode::OnNPCDialogueErrored(const FString& NPCName)
@@ -641,4 +878,96 @@ void ATartariaGameMode::OnNPCDialogueErrored(const FString& NPCName)
 		PC->SetShowMouseCursor(false);
 		PC->SetInputMode(FInputModeGameOnly());
 	}
+}
+
+// -------------------------------------------------------
+// Quest marker handlers
+// -------------------------------------------------------
+
+void ATartariaGameMode::SubscribeToQuestMarkers()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	for (TActorIterator<ATartariaQuestMarker> It(World); It; ++It)
+	{
+		ATartariaQuestMarker* Marker = *It;
+		Marker->OnQuestInteractedDelegate.AddDynamic(this, &ATartariaGameMode::OnQuestInteracted);
+	}
+}
+
+void ATartariaGameMode::OnQuestInteracted(const FString& QuestId, int32 Step)
+{
+	UE_LOG(LogTemp, Log, TEXT("TartariaGameMode: Quest '%s' interacted, step %d"), *QuestId, Step);
+
+	// Spawn quest-complete VFX at player location
+	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
+	if (PlayerPawn)
+	{
+		ATartariaRewardVFX::SpawnRewardVFX(
+			this, PlayerPawn->GetActorLocation(),
+			ERewardVFXType::QuestComplete, 2.0f);
+	}
+
+	// Refresh world state after quest interaction to pick up any changes
+	UTartariaWorldSubsystem* WorldSub = GetWorld()->GetSubsystem<UTartariaWorldSubsystem>();
+	if (WorldSub)
+		WorldSub->SyncWithBackend();
+}
+
+// -------------------------------------------------------
+// SSE game event stream handlers
+// -------------------------------------------------------
+
+void ATartariaGameMode::OnSSESnapshotReceived()
+{
+	UHJGameInstance* GI = UHJGameInstance::Get(this);
+	if (!GI || !GI->GameEventStream || !HUDWidget) return;
+
+	UHJGameEventStream* Stream = GI->GameEventStream;
+
+	// Enable SSE mode on WorldSubsystem (disable polling)
+	UTartariaWorldSubsystem* WorldSub = GetWorld()->GetSubsystem<UTartariaWorldSubsystem>();
+	if (WorldSub && !WorldSub->bUseSSE)
+		WorldSub->bUseSSE = true;
+
+	// Push SSE data into WorldSubsystem so save/load still works
+	if (WorldSub)
+	{
+		WorldSub->Credits    = Stream->Credits;
+		WorldSub->CurrentEra = Stream->Era;
+		WorldSub->CurrentDay = Stream->CurrentDay;
+		WorldSub->TimeOfDay  = Stream->TimeOfDay;
+		WorldSub->Phase      = Stream->Phase;
+		WorldSub->Factions   = Stream->Factions;
+		WorldSub->Inventory  = Stream->Inventory;
+		WorldSub->Fleet      = Stream->Fleet;
+		WorldSub->Tech       = Stream->Tech;
+		WorldSub->Mining     = Stream->Mining;
+	}
+
+	// Extract resource counts from SSE inventory
+	int32 Iron = 0, Stone = 0, Knowledge = 0, Crystal = 0;
+	for (const FTartariaInventoryItem& Item : Stream->Inventory)
+	{
+		if (Item.ItemId == TEXT("iron"))           Iron += Item.Quantity;
+		else if (Item.ItemId == TEXT("stone"))     Stone += Item.Quantity;
+		else if (Item.ItemId == TEXT("knowledge")) Knowledge += Item.Quantity;
+		else if (Item.ItemId == TEXT("crystal"))   Crystal += Item.Quantity;
+	}
+
+	HUDWidget->SetGameEconomy(
+		Stream->Credits, Stream->Era, Stream->CurrentDay,
+		Iron, Stone, Knowledge, Crystal);
+
+	if (Stream->Factions.Num() > 0)
+		HUDWidget->SetFactionInfo(Stream->Factions);
+
+	HUDWidget->SetStrategicInfo(Stream->Fleet, Stream->Tech, Stream->Mining);
+}
+
+void ATartariaGameMode::OnSSETickEvents(const TArray<FTartariaTickEvent>& Events)
+{
+	// Reuse existing tick event handler
+	OnTickCompleted(Events);
 }

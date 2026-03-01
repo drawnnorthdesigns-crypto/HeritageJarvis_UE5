@@ -17,6 +17,9 @@ class UHJDialogueWidget;
 class UTartariaWorldPopulator;
 class ATartariaBiomeVolume;
 class ATartariaNPC;
+class ATartariaSolarSystemManager;
+class ATartariaQuestMarker;
+class ATartariaLevelStreamManager;
 
 /**
  * ATartariaGameMode — Game mode for the Tartaria open world.
@@ -130,6 +133,14 @@ public:
 	UPROPERTY()
 	UTartariaWorldPopulator* WorldPopulator = nullptr;
 
+	/** Solar system manager — orbital mechanics, transit calculations. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria")
+	ATartariaSolarSystemManager* SolarSystem = nullptr;
+
+	/** Level stream manager — seamless body transitions, visual profile swaps. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria")
+	ATartariaLevelStreamManager* LevelStreamManager = nullptr;
+
 	/** Current zone difficulty (updated on zone change). */
 	int32 CurrentZoneDifficulty = 1;
 
@@ -172,13 +183,27 @@ private:
 
 	void SubscribeToBiomeVolumes();
 	void SubscribeToNPCs();
+	void SubscribeToQuestMarkers();
 
 	UFUNCTION()
 	void OnNPCDialogueStarted(const FString& NPCName, const FString& Faction);
 
 	UFUNCTION()
-	void OnNPCDialogueReceived(const FString& NPCName, const FString& ResponseText);
+	void OnNPCDialogueReceived(const FString& NPCName, const FString& ResponseText, const TArray<FString>& Actions);
 
 	UFUNCTION()
 	void OnNPCDialogueErrored(const FString& NPCName);
+
+	UFUNCTION()
+	void OnDialogueActionSelected(const FString& ActionKey);
+
+	UFUNCTION()
+	void OnQuestInteracted(const FString& QuestId, int32 Step);
+
+	// SSE game event stream handlers
+	UFUNCTION()
+	void OnSSESnapshotReceived();
+
+	UFUNCTION()
+	void OnSSETickEvents(const TArray<FTartariaTickEvent>& Events);
 };

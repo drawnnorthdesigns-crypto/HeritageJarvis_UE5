@@ -37,10 +37,10 @@ void UHJLoadingWidget::BuildProgrammaticLayout()
         UOverlay::StaticClass(), FName("Root"));
     WidgetTree->RootWidget = Root;
 
-    // Dark semi-transparent background covering the full screen
+    // Dark parchment background (Tartarian themed)
     DarkOverlay = WidgetTree->ConstructWidget<UBorder>(
         UBorder::StaticClass(), FName("DarkOverlay"));
-    DarkOverlay->SetBrushColor(FLinearColor(0.02f, 0.02f, 0.04f, 0.92f));
+    DarkOverlay->SetBrushColor(FLinearColor(0.08f, 0.06f, 0.04f, 0.92f));
     Root->AddChild(DarkOverlay);
 
     // --- Centered VBox for loading text + progress bar + stage text ---
@@ -59,7 +59,7 @@ void UHJLoadingWidget::BuildProgrammaticLayout()
     LoadingText = WidgetTree->ConstructWidget<UTextBlock>(
         UTextBlock::StaticClass(), FName("LoadingText"));
     LoadingText->SetText(FText::FromString(TEXT("Loading...")));
-    LoadingText->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+    LoadingText->SetColorAndOpacity(FSlateColor(FLinearColor(0.95f, 0.9f, 0.8f)));
     FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Bold", 24);
     LoadingText->SetFont(Font);
     LoadingText->SetJustification(ETextJustify::Center);
@@ -81,7 +81,7 @@ void UHJLoadingWidget::BuildProgrammaticLayout()
     PipelineProgressBar = WidgetTree->ConstructWidget<UProgressBar>(
         UProgressBar::StaticClass(), FName("PipelineProgressBar"));
     PipelineProgressBar->SetPercent(0.0f);
-    PipelineProgressBar->SetFillColorAndOpacity(FLinearColor(0.2f, 0.6f, 1.0f));
+    PipelineProgressBar->SetFillColorAndOpacity(FLinearColor(0.78f, 0.63f, 0.30f));  // Gold
     PipelineProgressBar->SetVisibility(ESlateVisibility::Collapsed);
     BarBox->AddChild(PipelineProgressBar);
 
@@ -119,12 +119,30 @@ void UHJLoadingWidget::NativeDestruct()
     Super::NativeDestruct();
 }
 
+// Themed loading messages for Tartarian atmosphere
+static const TCHAR* LOADING_MESSAGES[] = {
+    TEXT("Unsealing the chronicle..."),
+    TEXT("Consulting the Akashic Record..."),
+    TEXT("Awakening the resonance field..."),
+    TEXT("Reconstructing the temporal lattice..."),
+    TEXT("The scribe reads your scrolls..."),
+};
+static constexpr int32 NUM_LOADING_MESSAGES = 5;
+
 void UHJLoadingWidget::ShowLoading(const FString& Message)
 {
-    LoadingMessage = Message;
+    // If generic "Loading...", use a themed message instead
+    FString DisplayMsg = Message;
+    if (Message == TEXT("Loading...") || Message.IsEmpty())
+    {
+        int32 Idx = FMath::RandRange(0, NUM_LOADING_MESSAGES - 1);
+        DisplayMsg = LOADING_MESSAGES[Idx];
+    }
+
+    LoadingMessage = DisplayMsg;
     bIsLoading     = true;
     SetVisibility(ESlateVisibility::Visible);
-    OnLoadingStateChanged(true, Message);
+    OnLoadingStateChanged(true, DisplayMsg);
 }
 
 void UHJLoadingWidget::HideLoading()

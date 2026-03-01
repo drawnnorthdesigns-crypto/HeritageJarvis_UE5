@@ -5,9 +5,11 @@
 #include "HJApiClient.h"
 #include "HJEventPoller.h"
 #include "HJFlaskProcess.h"
+#include "HJGameEventStream.h"
 #include "HJGameInstance.generated.h"
 
 class UHJSaveGame;
+class UHJWebSocketClient;
 
 // Broadcast when Flask health check first succeeds after launch
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnFlaskReady);
@@ -72,6 +74,14 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "HJ")
 	UHJFlaskProcess* FlaskProcess;
 
+	/** SSE game event stream — replaces polling for game state. */
+	UPROPERTY(BlueprintReadOnly, Category = "HJ")
+	UHJGameEventStream* GameEventStream;
+
+	/** WebSocket client for real-time Flask events. */
+	UPROPERTY(BlueprintReadOnly, Category = "HJ")
+	UHJWebSocketClient* WebSocketClient;
+
 	/** Broadcast when Flask first comes online after auto-launch. */
 	UPROPERTY(BlueprintAssignable, Category = "HJ|Events")
 	FOnFlaskReady OnFlaskReady;
@@ -107,11 +117,23 @@ public:
 	// Save / Load
 	// -------------------------------------------------------
 
+	/** Optional seal sound effect — assign in Blueprint if desired. */
+	UPROPERTY(EditDefaultsOnly, Category = "HJ|Save")
+	USoundBase* SealSound = nullptr;
+
 	UFUNCTION(BlueprintCallable, Category = "HJ")
 	void SaveSession();
 
 	UFUNCTION(BlueprintCallable, Category = "HJ")
 	void LoadSession();
+
+	/** Save full game state (credits, inventory, factions, fleet, tech, mining, combat). */
+	UFUNCTION(BlueprintCallable, Category = "HJ")
+	void SaveGameState();
+
+	/** Restore game state from save into WorldSubsystem + Character. */
+	UFUNCTION(BlueprintCallable, Category = "HJ")
+	void LoadGameState();
 
 	/** Update the last active tab name so it survives restarts */
 	UFUNCTION(BlueprintCallable, Category = "HJ")
@@ -166,4 +188,9 @@ private:
 
 	UPROPERTY()
 	UHJSaveGame* SaveData = nullptr;
+
+public:
+	/** Timestamp of last successful save (for HUD "Last sealed: Xs ago" display). */
+	UPROPERTY(BlueprintReadOnly, Category = "HJ|Save")
+	FDateTime LastSaveTime;
 };
