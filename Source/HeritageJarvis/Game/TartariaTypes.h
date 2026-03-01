@@ -31,6 +31,16 @@ enum class ETartariaSpecialist : uint8
 	Governor       UMETA(DisplayName = "Governor"),
 };
 
+/** NPC activity state — drives visual animation in ATartariaNPC. */
+UENUM(BlueprintType)
+enum class ENPCActivityState : uint8
+{
+	Idle      UMETA(DisplayName = "Idle"),
+	Working   UMETA(DisplayName = "Working"),
+	Thinking  UMETA(DisplayName = "Thinking"),
+	Moving    UMETA(DisplayName = "Moving")
+};
+
 /** Biome zone definition — synced from Flask backend. */
 USTRUCT(BlueprintType)
 struct FTartariaBiomeZone
@@ -79,6 +89,80 @@ struct FTartariaPOI
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria")
 	bool bActive = true;
+};
+
+/** Physical surface material type -- drives impact audio variation. */
+UENUM(BlueprintType)
+enum class ETartariaPhysicalMaterial : uint8
+{
+	Stone    UMETA(DisplayName = "Stone"),
+	Metal    UMETA(DisplayName = "Metal"),
+	Wood     UMETA(DisplayName = "Wood"),
+	Crystal  UMETA(DisplayName = "Crystal"),
+	Earth    UMETA(DisplayName = "Earth"),
+	Water    UMETA(DisplayName = "Water")
+};
+
+/** Audio profile describing how a physical material sounds on impact. */
+USTRUCT(BlueprintType)
+struct FMaterialAudioProfile
+{
+	GENERATED_BODY()
+
+	/** Fundamental frequency of the impact sound (Hz). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	float BasePitch = 120.f;
+
+	/** Random variance applied to pitch (fraction, e.g. 0.1 = +/-10%). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	float PitchVariance = 0.1f;
+
+	/** How quickly the sound fades (seconds). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	float Decay = 0.15f;
+
+	/** Resonance factor (0 = dead/muffled, 1 = bright/ringing). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	float Resonance = 0.2f;
+
+	/** Debug visualization color. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Audio")
+	FLinearColor DebugColor = FLinearColor::White;
+};
+
+/**
+ * Weapon combat stats derived from CAD mesh geometry (Task #203).
+ * Parsed from /api/mesh/metadata or /api/mesh/combat-stats endpoint.
+ * UE5 uses these to configure dynamic weapon hitboxes and attack parameters.
+ */
+USTRUCT(BlueprintType)
+struct FWeaponCombatStats
+{
+	GENERATED_BODY()
+
+	/** Weapon reach in cm (longest mesh axis / 10). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Combat")
+	float Reach = 50.0f;
+
+	/** Weapon weight in kg (volume * density). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Combat")
+	float WeightKg = 1.0f;
+
+	/** Base damage value (10-100, scales with volume). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Combat")
+	int32 BaseDamage = 15;
+
+	/** Attack speed multiplier (0.3 for heavy, 1.0 for light). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Combat")
+	float AttackSpeed = 1.0f;
+
+	/** Hitbox half-extents in cm for UE5 box collision (derived from mesh bbox). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tartaria|Combat")
+	FVector HitboxExtents = FVector(5.0f, 5.0f, 25.0f);
+
+	/** Whether these stats have been populated from backend data. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Combat")
+	bool bIsValid = false;
 };
 
 /** Resource type enum for harvestable nodes. */

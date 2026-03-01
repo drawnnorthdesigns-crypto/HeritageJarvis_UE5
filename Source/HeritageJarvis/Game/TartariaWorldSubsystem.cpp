@@ -1,4 +1,5 @@
 #include "TartariaWorldSubsystem.h"
+#include "TartariaInstancedWealth.h"
 #include "TartariaQuestMarker.h"
 #include "TartariaEnemyActor.h"
 #include "TartariaBiomeVolume.h"
@@ -237,6 +238,20 @@ void UTartariaWorldSubsystem::ParseWorldState(const FString& JsonBody)
 
 	OnGameStateUpdated.Broadcast();
 
+	// ── Push live credit balance to all TartariaInstancedWealth vault actors ──
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		for (TActorIterator<ATartariaInstancedWealth> It(World); It; ++It)
+		{
+			ATartariaInstancedWealth* Vault = *It;
+			if (Vault)
+			{
+				Vault->UpdateFromWorldState(Credits);
+			}
+		}
+	}
+
 	UE_LOG(LogTemp, Log, TEXT("TartariaWorldSubsystem: Synced — Era=%s, Day=%d, POIs=%d, Credits=%d"),
 		*CurrentEra, CurrentDay, ActivePOIs.Num(), Credits);
 }
@@ -328,7 +343,23 @@ void UTartariaWorldSubsystem::ParseTickResponse(const FString& JsonBody)
 	// Update credits if provided
 	double CreditsEarned = 0;
 	if (Root->TryGetNumberField(TEXT("credits_earned"), CreditsEarned))
+	{
 		Credits += static_cast<int32>(CreditsEarned);
+
+		// Push updated balance to vault visualizers immediately
+		UWorld* TickWorld = GetWorld();
+		if (TickWorld)
+		{
+			for (TActorIterator<ATartariaInstancedWealth> It(TickWorld); It; ++It)
+			{
+				ATartariaInstancedWealth* Vault = *It;
+				if (Vault)
+				{
+					Vault->UpdateFromWorldState(Credits);
+				}
+			}
+		}
+	}
 
 	// Parse events
 	TArray<FTartariaTickEvent> Events;

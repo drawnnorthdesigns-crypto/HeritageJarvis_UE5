@@ -11,6 +11,8 @@ class UPointLightComponent;
 class UAudioComponent;
 class UProceduralMeshComponent;
 class UHJMeshLoader;
+class UTextRenderComponent;
+class UMaterialInstanceDynamic;
 
 /**
  * ATartariaForgeBuilding — Interactable building actor in the Tartaria world.
@@ -167,7 +169,126 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void StartConstruction();
 
+	// -------------------------------------------------------
+	// Materialization Burst — VFX on pipeline completion
+	// -------------------------------------------------------
+
+	/**
+	 * Play materialization burst VFX when a pipeline project completes.
+	 * Flashes building emissive to bright gold, scales up pedestal briefly,
+	 * and activates a golden spark light burst.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Forge")
+	void PlayMaterializationBurst();
+
+	/** Extra light for completion burst (golden upward flash) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|Forge")
+	UPointLightComponent* CompletionBurstLight;
+
+	// -------------------------------------------------------
+	// Forge Queue Counter — Progress Light + Floating Text
+	// -------------------------------------------------------
+
+	/** Progress-driven chimney light — intensity maps to queue progress_pct */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|Forge")
+	UPointLightComponent* ChimneyLight;
+
+	/** Floating text above the building showing queue status */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tartaria|Forge")
+	UTextRenderComponent* ProgressText;
+
+	/** Cached queue status fields (updated from API poll) */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Forge")
+	int32 QueueCompletedToday = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Forge")
+	int32 QueueTotalJobs = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Forge")
+	int32 QueueProgressPct = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Forge")
+	FString QueueActiveStageName;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Forge")
+	bool bQueueHasActiveJob = false;
+
+	// -------------------------------------------------------
+	// Live-Thinking Proxy — real-time proxy geometry during generation
+	// -------------------------------------------------------
+
+	/** Dynamic array of proxy geometry primitives currently displayed */
+	UPROPERTY()
+	TArray<UStaticMeshComponent*> ProxyPrimitives;
+
+	/** Whether proxy generation display is in progress */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|Forge|Proxy")
+	bool bProxyActive = false;
+
+	/** Translucent golden material applied to proxy primitives */
+	UPROPERTY()
+	UMaterialInstanceDynamic* ProxyMaterial = nullptr;
+
+	/** Poll the live-proxy endpoint and spawn/update proxy geometry */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Forge|Proxy")
+	void PollLiveProxy();
+
+	/** Remove all proxy primitives from the scene */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Forge|Proxy")
+	void ClearProxyGeometry();
+
+	/**
+	 * Spawn a single proxy primitive (box/cylinder/sphere) attached to the forge.
+	 * Coordinates are in Python mm space — converted to UE5 cm internally.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Forge|Proxy")
+	void AddProxyPrimitive(const FString& Type, FVector Location, FVector Scale, FRotator Rotation);
+
+	/**
+	 * Transition proxy primitives from translucent gold to opaque on completion.
+	 * Called when pipeline status transitions to "complete".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Forge|Proxy")
+	void SolidifyProxy();
+
 private:
+	/** Timer accumulator for queue status polling (every 5 seconds) */
+	float QueuePollTimer = 0.0f;
+
+	/** Poll the backend queue-status endpoint and update light/text */
+	void PollQueueStatus();
+
+	/** Apply queue status data to ChimneyLight and ProgressText */
+	void ApplyQueueVisuals();
+
+	// ── Live Proxy State ──────────────────────────────────────
+	/** Timer accumulator for proxy polling (every 2 seconds) */
+	float ProxyPollTimer = 0.0f;
+
+	/** Previous bQueueHasActiveJob state for detecting transitions */
+	bool bPreviousQueueHasActiveJob = false;
+
+	/** Whether proxy solidification is in progress */
+	bool bSolidifyActive = false;
+
+	/** Elapsed time into solidification animation */
+	float SolidifyElapsed = 0.0f;
+
+	/** Total duration of solidification effect (seconds) */
+	float SolidifyDuration = 0.5f;
+
+	/** Timer until proxy is cleared after solidification (seconds) */
+	float ProxyClearCountdown = -1.0f;
+
+	/** Scale-up animation tracking per proxy primitive */
+	struct FProxyScaleAnim
+	{
+		int32 Index;
+		FVector TargetScale;
+		float Elapsed;
+		float Duration;
+	};
+	TArray<FProxyScaleAnim> ProxyScaleAnims;
 	// Construction animation state
 	bool bIsConstructing = false;
 	float ConstructionProgress = 1.0f;  // 0=unbuilt, 1=complete
@@ -212,4 +333,20 @@ private:
 
 	/** Torch flicker phase accumulator. */
 	float FlickerPhase = 0.f;
+
+	// -------------------------------------------------------
+	// Materialization Burst State
+	// -------------------------------------------------------
+
+	/** True while the burst animation is playing */
+	bool bMaterializationBurstActive = false;
+
+	/** Elapsed time into the burst animation */
+	float BurstElapsed = 0.0f;
+
+	/** Total duration of the burst effect */
+	float BurstDuration = 2.0f;
+
+	/** Original pedestal scale (restored after burst) */
+	FVector OriginalPedestalScale = FVector(1.2f, 1.2f, 0.15f);
 };

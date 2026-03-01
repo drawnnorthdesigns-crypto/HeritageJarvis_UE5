@@ -459,6 +459,9 @@ void ATartariaGameMode::OnPipelineStatusUpdate(const FString& ProjectId,
 	{
 		UHJNotificationWidget::Toast(TEXT("Pipeline complete!"), EHJNotifType::Success);
 
+		// Notify all listeners via delegate + trigger forge burst VFX
+		NotifyProjectCompleted(ProjectId);
+
 		// Spawn materialization VFX at player location (CAD model ready)
 		APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
 		if (PlayerPawn)
@@ -478,6 +481,28 @@ void ATartariaGameMode::OnPipelineStatusUpdate(const FString& ProjectId,
 				{
 					ForgeB->LoadLatestForgedModel();
 				}
+			}
+		}
+	}
+}
+
+void ATartariaGameMode::NotifyProjectCompleted(const FString& ProjectId)
+{
+	UE_LOG(LogTemp, Log, TEXT("TartariaGameMode: Project completed — %s"), *ProjectId);
+
+	// Broadcast delegate so any listener (including Blueprint) can react
+	OnProjectCompleted.Broadcast(ProjectId);
+
+	// Trigger materialization burst on all Forge buildings
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		for (TActorIterator<ATartariaForgeBuilding> It(World); It; ++It)
+		{
+			ATartariaForgeBuilding* Forge = *It;
+			if (Forge->BuildingType == ETartariaBuildingType::Forge)
+			{
+				Forge->PlayMaterializationBurst();
 			}
 		}
 	}

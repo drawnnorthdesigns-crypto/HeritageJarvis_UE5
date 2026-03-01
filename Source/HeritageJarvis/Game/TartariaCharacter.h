@@ -11,6 +11,7 @@ class UStaticMeshComponent;
 class UPointLightComponent;
 class ATartariaWarpEffect;
 class UProceduralMeshComponent;
+class UBoxComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnFootstep, bool, bSprinting);
 
@@ -134,6 +135,15 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Stats|Combat")
 	UProceduralMeshComponent* WeaponMesh = nullptr;
 
+	/** Dynamic hitbox derived from weapon CAD geometry (Task #203).
+	 *  Disabled by default, enabled only during attack hit window. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Stats|Combat")
+	UBoxComponent* WeaponHitbox = nullptr;
+
+	/** Combat stats derived from equipped weapon mesh geometry. */
+	UPROPERTY(BlueprintReadOnly, Category = "Stats|Combat")
+	FWeaponCombatStats EquippedWeaponStats;
+
 	/** Currently equipped weapon ID (from Python backend). */
 	UPROPERTY(BlueprintReadOnly, Category = "Stats|Combat")
 	FString EquippedWeaponId;
@@ -145,6 +155,20 @@ public:
 	/** Clear equipped weapon mesh. */
 	UFUNCTION(BlueprintCallable, Category = "Stats|Combat")
 	void UnequipWeapon();
+
+	/**
+	 * Apply weapon combat stats to the character (Task #203).
+	 * Configures the dynamic hitbox extents, attack speed modifier,
+	 * and base damage from mesh-derived combat data.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Stats|Combat")
+	void ApplyWeaponStats(const FWeaponCombatStats& Stats);
+
+	/** Enable the weapon hitbox (called at start of attack hit window). */
+	void EnableWeaponHitbox();
+
+	/** Disable the weapon hitbox (called at end of attack or swing). */
+	void DisableWeaponHitbox();
 
 	/** Current biome the player is in. */
 	UPROPERTY(BlueprintReadOnly, Category = "Stats|Combat")
@@ -240,6 +264,30 @@ public:
 	/** Footstep dust interval (seconds between puffs). */
 	float FootstepDustInterval = 0.4f;
 
+	// ── Material-Specific Audio (Task #205) ──────────────────
+
+	/**
+	 * Determine the physical material under the character's feet.
+	 * Performs a line trace downward and maps actor tags or
+	 * UPhysicalMaterial to ETartariaPhysicalMaterial.
+	 * Falls back to Stone if nothing specific is found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "HJ|Audio")
+	ETartariaPhysicalMaterial GetFloorMaterial() const;
+
+	/**
+	 * Play a material-aware footstep sound at the character's feet.
+	 * Called automatically from Tick() when moving on the ground.
+	 */
+	void PlayMaterialFootstep();
+
+	/**
+	 * The weapon's physical material type (used for combat hit sound blending).
+	 * Defaults to Metal. Updated when equipping a weapon from the backend.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HJ|Audio")
+	ETartariaPhysicalMaterial WeaponMaterialType = ETartariaPhysicalMaterial::Metal;
+
 	// -------------------------------------------------------
 	// Stamina System
 	// -------------------------------------------------------
@@ -329,6 +377,9 @@ private:
 	void UpdateTransit(float DeltaTime);
 	void AnimateIdle(float DeltaTime);
 
+	/** Fetch combat stats from backend and apply to weapon hitbox (Task #203). */
+	void FetchAndApplyWeaponCombatStats(const FString& WeaponId);
+
 	/** Helper: create and attach a primitive mesh sub-component. */
 	UStaticMeshComponent* CreateAvatarPart(const FName& Name, const TCHAR* ShapePath,
 		const FVector& RelLoc, const FRotator& RelRot, const FVector& Scale,
@@ -365,8 +416,14 @@ private:
 	float IdleAnimTime = 0.f;
 
 	// ── Phase 1: Movement Grounding ──────────────────────────────
-	/** Timer for footstep sound events (walk=0.4s, sprint=0.25s). */
+	/** Timer for footstep sound events. Interval varies by movement mode. */
 	float FootstepTimer = 0.f;
+
+	/** Cached floor material from last footstep trace. */
+	ETartariaPhysicalMaterial CachedFloorMaterial = ETartariaPhysicalMaterial::Stone;
+
+	/** Timer to throttle floor material traces (re-check every 0.3s). */
+	float FloorMaterialCheckTimer = 0.f;
 
 	/** Camera landing recovery (bumps down on land, recovers over 0.2s). */
 	float LandingRecoveryTimer = 0.f;
@@ -409,4 +466,7 @@ private:
 
 	// Attack slow (when stamina depleted)
 	float AttackSpeedMult = 1.0f;
+
+	// Weapon stats attack speed modifier (from CAD geometry, Task #203)
+	float WeaponSpeedMult = 1.0f;
 };

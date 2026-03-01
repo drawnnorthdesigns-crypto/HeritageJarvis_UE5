@@ -211,6 +211,28 @@ void UHJHUDWidget::BuildProgrammaticLayout()
         HBox->AddChild(Sp);
     }
 
+    // --- Forge Queue Counter status text ---
+    ForgeStatusText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("ForgeStatusText"));
+    ForgeStatusText->SetText(FText::FromString(TEXT("Forge: Idle")));
+    ForgeStatusText->SetColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)));
+    {
+        FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Bold", 10);
+        ForgeStatusText->SetFont(Font);
+    }
+    HBox->AddChild(ForgeStatusText);
+    UHorizontalBoxSlot* ForgeSlot = Cast<UHorizontalBoxSlot>(ForgeStatusText->Slot);
+    if (ForgeSlot)
+    {
+        ForgeSlot->SetVerticalAlignment(VAlign_Center);
+    }
+
+    // --- Spacer 12px ---
+    {
+        USpacer* Sp = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), FName("SpForge"));
+        Sp->SetSize(FVector2D(12, 0));
+        HBox->AddChild(Sp);
+    }
+
     // --- Esc hint text ---
     EscHintText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName("EscHintText"));
     EscHintText->SetText(FText::FromString(TEXT("ESC: Menu | I: Inv | G: Gov | M: Star Map | F3: Debug")));
@@ -897,6 +919,23 @@ void UHJHUDWidget::SetQueueCount(int32 Count)
     else
     {
         QueueBadge->SetVisibility(ESlateVisibility::Collapsed);
+    }
+}
+
+void UHJHUDWidget::SetForgeStatus(int32 CompletedToday, int32 TotalJobs, int32 ProgressPct, bool bHasActiveJob)
+{
+    if (!ForgeStatusText) return;
+
+    if (bHasActiveJob)
+    {
+        ForgeStatusText->SetText(FText::FromString(
+            FString::Printf(TEXT("Forge: %d/%d | %d%%"), CompletedToday, TotalJobs, ProgressPct)));
+        ForgeStatusText->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.84f, 0.0f)));  // Gold
+    }
+    else
+    {
+        ForgeStatusText->SetText(FText::FromString(TEXT("Forge: Idle")));
+        ForgeStatusText->SetColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)));  // Grey
     }
 }
 

@@ -166,6 +166,52 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|NPC")
 	void SetMood(int32 NewMood);
 
+	// ── Dialogue Eye Contact ────────────────────────────────
+	/** True while NPC is engaged in dialogue — enables eye-contact head tracking. */
+	UPROPERTY(BlueprintReadWrite, Category = "Tartaria|NPC")
+	bool bInDialogue = false;
+
+	/** Begin dialogue mode — called by OnInteract. */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|NPC")
+	void StartDialogue();
+
+	/** End dialogue mode — lerps head back to forward-facing. */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|NPC")
+	void EndDialogue();
+
+	// ── Activity State Reflection ────────────────────────────
+	/** Current activity string received from Python backend (e.g. "researching", "idle"). */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|NPC")
+	FString CurrentActivity = TEXT("idle");
+
+	/** Derived activity state enum for animation selection. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|NPC")
+	ENPCActivityState ActivityState = ENPCActivityState::Idle;
+
+	/** Timer accumulator for activity-based animations (wraps at 2*PI). */
+	float ActivityAnimTimer = 0.f;
+
+	/** Apply visual behavior (head tilt, sway, arm motion) based on CurrentActivity. */
+	void UpdateActivityVisuals(float DeltaTime);
+
+	/** Time of last activity fetch from backend. */
+	float LastActivityFetchTime = -999.f;
+
+	/** Fetch current_activity from the NPC profile endpoint. */
+	void FetchCurrentActivity();
+
+	// ── Reputation Aura ─────────────────────────────────────
+	/** Reputation tier: 0=STRANGER, 1=ACQUAINTANCE, 2=ALLY, 3=CONFIDANT, 4=TRUSTED */
+	UPROPERTY(BlueprintReadOnly, Category = "Tartaria|NPC")
+	int32 ReputationTier = 0;
+
+	/** Update the reputation aura from a relationship_score (0-100). */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|NPC")
+	void SetReputationFromScore(int32 Score);
+
+	/** Force-fetch reputation from the Python backend. */
+	void FetchReputationTier();
+
 private:
 	void SendDialogueRequest(APlayerController* Interactor, const FString& PlayerMessage);
 
@@ -185,6 +231,27 @@ private:
 	UPROPERTY()
 	UPointLightComponent* MoodLight = nullptr;
 
+	// ── Dialogue Eye Contact (private state) ────────────────
+	/** Target head rotation during dialogue (toward player camera). */
+	FRotator DialogueTargetHeadRotation = FRotator::ZeroRotator;
+
+	/** Current interpolated head rotation for smooth eye contact. */
+	FRotator DialogueCurrentHeadRotation = FRotator::ZeroRotator;
+
+	// ── Reputation Aura (private state) ─────────────────────
+	/** Point light component for the reputation aura glow. */
+	UPROPERTY()
+	UPointLightComponent* ReputationAura = nullptr;
+
+	/** Base intensity for the current reputation tier (before pulse). */
+	float ReputationBaseIntensity = 200.f;
+
+	/** Aura pulse phase accumulator. */
+	float AuraPulsePhase = 0.f;
+
+	/** Time of last reputation fetch from backend. */
+	float LastReputationFetchTime = -999.f;
+
 	/** Idle variation timer. */
 	float IdleVariationTimer = 0.f;
 
@@ -193,4 +260,16 @@ private:
 
 	/** Time until next idle switch. */
 	float NextIdleSwitchTime = 15.f;
+
+	/** Apply color and intensity to the reputation aura based on current tier. */
+	void ApplyReputationAuraVisuals();
+
+	/** Get tier-specific aura color. */
+	static FLinearColor GetReputationTierColor(int32 Tier);
+
+	/** Get tier-specific aura base intensity. */
+	static float GetReputationTierIntensity(int32 Tier);
+
+	/** Map an activity string (from Python) to the ENPCActivityState enum. */
+	static ENPCActivityState MapActivityStringToState(const FString& Activity);
 };

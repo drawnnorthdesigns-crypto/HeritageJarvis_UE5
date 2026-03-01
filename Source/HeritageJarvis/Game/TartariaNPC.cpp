@@ -101,6 +101,15 @@ ATartariaNPC::ATartariaNPC()
 	MoodLight->SetAttenuationRadius(80.f);
 	MoodLight->SetLightColor(FLinearColor(0.7f, 0.7f, 0.5f));  // Neutral warm
 	MoodLight->SetCastShadows(false);
+
+	// ── Reputation Aura Light ─────────────────────────────────
+	ReputationAura = CreateDefaultSubobject<UPointLightComponent>(TEXT("ReputationAura"));
+	ReputationAura->SetupAttachment(RootComponent);
+	ReputationAura->SetRelativeLocation(FVector(0.f, 0.f, 80.f));  // Slightly above NPC center
+	ReputationAura->SetIntensity(200.f);
+	ReputationAura->SetAttenuationRadius(150.f);
+	ReputationAura->SetLightColor(FLinearColor(0.5f, 0.5f, 0.5f));  // Default grey (STRANGER)
+	ReputationAura->SetCastShadows(false);
 }
 
 void ATartariaNPC::BeginPlay()
@@ -113,6 +122,12 @@ void ATartariaNPC::BeginPlay()
 
 	// Spawn environmental workshop props around the NPC
 	SpawnWorkshopProps();
+
+	// Fetch initial reputation tier from backend (non-blocking)
+	FetchReputationTier();
+
+	// Fetch initial activity state from backend (non-blocking)
+	FetchCurrentActivity();
 }
 
 void ATartariaNPC::Tick(float DeltaTime)
@@ -142,7 +157,50 @@ void ATartariaNPC::Tick(float DeltaTime)
 	if (Player && BodyHead)
 	{
 		float DistToPlayer = FVector::Dist(GetActorLocation(), Player->GetActorLocation());
-		if (DistToPlayer < 500.f)  // Within interaction range
+
+		// ── Dialogue Eye Contact (enhanced precision head tracking) ──
+		if (bInDialogue)
+		{
+			bPlayerNearby = true;
+
+			// Turn body toward player
+			FVector ToPlayer2D = (Player->GetActorLocation() - GetActorLocation()).GetSafeNormal2D();
+			float BodyYaw = FMath::Atan2(ToPlayer2D.Y, ToPlayer2D.X) * (180.f / PI);
+			FRotator BodyTargetRot = FRotator(0.f, BodyYaw, 0.f);
+			SetActorRotation(FMath::RInterpTo(GetActorRotation(), BodyTargetRot, DeltaTime, 3.f));
+
+			// Calculate head rotation toward player camera location
+			APlayerCameraManager* CamMgr = UGameplayStatics::GetPlayerCameraManager(this, 0);
+			FVector LookTarget = CamMgr ? CamMgr->GetCameraLocation() : Player->GetActorLocation();
+			FVector HeadWorldLoc = BodyHead->GetComponentLocation();
+			FVector ToCamera = (LookTarget - HeadWorldLoc).GetSafeNormal();
+
+			// Convert to local-space rotator relative to actor forward
+			FRotator WorldLookRot = ToCamera.Rotation();
+			FRotator ActorRot = GetActorRotation();
+			FRotator LocalLookRot = WorldLookRot - ActorRot;
+			LocalLookRot.Normalize();
+
+			// Clamp to max 30 degrees yaw, 15 degrees pitch
+			DialogueTargetHeadRotation.Yaw = FMath::Clamp(LocalLookRot.Yaw, -30.f, 30.f);
+			DialogueTargetHeadRotation.Pitch = FMath::Clamp(LocalLookRot.Pitch, -15.f, 15.f);
+			DialogueTargetHeadRotation.Roll = 0.f;
+
+			// Smooth lerp at ~3 degrees/sec equivalent (InterpSpeed=3.0)
+			DialogueCurrentHeadRotation = FMath::RInterpTo(
+				DialogueCurrentHeadRotation, DialogueTargetHeadRotation, DeltaTime, 3.0f);
+
+			BodyHead->SetRelativeRotation(DialogueCurrentHeadRotation);
+
+			// Greeting gesture: raise right arm when player approaches
+			if (DistToPlayer < 300.f && BodyArmR)
+			{
+				float GestureAngle = FMath::FInterpTo(
+					BodyArmR->GetRelativeRotation().Pitch, -30.f, DeltaTime, 4.f);
+				BodyArmR->SetRelativeRotation(FRotator(GestureAngle, 0.f, 15.f));
+			}
+		}
+		else if (DistToPlayer < 500.f)  // Within interaction range (non-dialogue)
 		{
 			bPlayerNearby = true;
 
@@ -155,7 +213,11 @@ void ATartariaNPC::Tick(float DeltaTime)
 
 			// Head tilt toward player (subtle pitch)
 			float HeadPitch = FMath::Clamp((DistToPlayer - 200.f) * -0.02f, -8.f, 0.f);
-			BodyHead->SetRelativeRotation(FRotator(HeadPitch, 0.f, 0.f));
+
+			// When dialogue just ended, smoothly lerp head back from dialogue rotation
+			DialogueCurrentHeadRotation = FMath::RInterpTo(
+				DialogueCurrentHeadRotation, FRotator(HeadPitch, 0.f, 0.f), DeltaTime, 2.f);
+			BodyHead->SetRelativeRotation(DialogueCurrentHeadRotation);
 
 			// Greeting gesture: raise right arm when player approaches
 			if (DistToPlayer < 300.f && BodyArmR)
@@ -167,9 +229,10 @@ void ATartariaNPC::Tick(float DeltaTime)
 		}
 		else
 		{
-			// Reset head when player is far
-			FRotator HeadRot = BodyHead->GetRelativeRotation();
-			BodyHead->SetRelativeRotation(FMath::RInterpTo(HeadRot, FRotator::ZeroRotator, DeltaTime, 2.f));
+			// Reset head when player is far — lerp back to forward-facing
+			DialogueCurrentHeadRotation = FMath::RInterpTo(
+				DialogueCurrentHeadRotation, FRotator::ZeroRotator, DeltaTime, 2.f);
+			BodyHead->SetRelativeRotation(DialogueCurrentHeadRotation);
 		}
 	}
 
@@ -258,9 +321,14 @@ void ATartariaNPC::Tick(float DeltaTime)
 		}
 	}
 
-	// ── Idle Variation System ──────────────────────────────
-	if (!bPlayingGesture && !bPlayerNearby)
+	// ── Activity State Visuals (overrides idle variation when not in dialogue/gesture) ──
+	if (!bPlayingGesture && !bPlayerNearby && !bInDialogue)
 	{
+		UpdateActivityVisuals(DeltaTime);
+	}
+	else if (!bPlayingGesture && !bPlayerNearby)
+	{
+		// ── Idle Variation System (fallback when in dialogue but player walked away) ──
 		IdleVariationTimer += DeltaTime;
 		if (IdleVariationTimer >= NextIdleSwitchTime)
 		{
@@ -305,6 +373,32 @@ void ATartariaNPC::Tick(float DeltaTime)
 		default:  // Variant 0: default idle (breathing + arm sway already handled above)
 			break;
 		}
+	}
+
+	// ── Periodic Activity Re-fetch ────────────────────────────
+	{
+		UWorld* W = GetWorld();
+		if (W)
+		{
+			float WorldTime = W->GetTimeSeconds();
+			// Re-fetch activity every 15 seconds (lightweight HTTP call)
+			if (WorldTime - LastActivityFetchTime >= 15.f)
+			{
+				FetchCurrentActivity();
+			}
+		}
+	}
+
+	// ── Reputation Aura Pulse ────────────────────────────────
+	if (ReputationAura)
+	{
+		AuraPulsePhase += DeltaTime * 0.5f * 2.f * PI;  // 0.5 Hz
+		if (AuraPulsePhase > 2.f * PI)
+			AuraPulsePhase -= 2.f * PI;
+
+		// +/- 20% intensity oscillation
+		float PulseFactor = 1.0f + FMath::Sin(AuraPulsePhase) * 0.2f;
+		ReputationAura->SetIntensity(ReputationBaseIntensity * PulseFactor);
 	}
 }
 
@@ -607,6 +701,410 @@ void ATartariaNPC::SetMood(int32 NewMood)
 	}
 }
 
+// -------------------------------------------------------
+// Dialogue Eye Contact
+// -------------------------------------------------------
+
+void ATartariaNPC::StartDialogue()
+{
+	bInDialogue = true;
+	// Fetch reputation tier when dialogue begins
+	FetchReputationTier();
+}
+
+void ATartariaNPC::EndDialogue()
+{
+	bInDialogue = false;
+	// DialogueCurrentHeadRotation will lerp back to forward in Tick()
+}
+
+// -------------------------------------------------------
+// Reputation Aura
+// -------------------------------------------------------
+
+FLinearColor ATartariaNPC::GetReputationTierColor(int32 Tier)
+{
+	switch (Tier)
+	{
+	case 0:  return FLinearColor(0.5f, 0.5f, 0.5f);   // STRANGER — grey
+	case 1:  return FLinearColor(0.3f, 0.5f, 0.8f);   // ACQUAINTANCE — blue
+	case 2:  return FLinearColor(0.2f, 0.8f, 0.3f);   // ALLY — green
+	case 3:  return FLinearColor(0.9f, 0.75f, 0.2f);  // CONFIDANT — gold
+	case 4:  return FLinearColor(0.6f, 0.2f, 0.9f);   // TRUSTED — purple
+	default: return FLinearColor(0.5f, 0.5f, 0.5f);
+	}
+}
+
+float ATartariaNPC::GetReputationTierIntensity(int32 Tier)
+{
+	switch (Tier)
+	{
+	case 0:  return 200.f;   // STRANGER
+	case 1:  return 300.f;   // ACQUAINTANCE
+	case 2:  return 500.f;   // ALLY
+	case 3:  return 800.f;   // CONFIDANT
+	case 4:  return 1200.f;  // TRUSTED
+	default: return 200.f;
+	}
+}
+
+void ATartariaNPC::SetReputationFromScore(int32 Score)
+{
+	Score = FMath::Clamp(Score, 0, 100);
+	if (Score >= 80)
+		ReputationTier = 4;  // TRUSTED
+	else if (Score >= 60)
+		ReputationTier = 3;  // CONFIDANT
+	else if (Score >= 40)
+		ReputationTier = 2;  // ALLY
+	else if (Score >= 20)
+		ReputationTier = 1;  // ACQUAINTANCE
+	else
+		ReputationTier = 0;  // STRANGER
+
+	ApplyReputationAuraVisuals();
+}
+
+void ATartariaNPC::ApplyReputationAuraVisuals()
+{
+	if (!ReputationAura) return;
+
+	FLinearColor AuraColor = GetReputationTierColor(ReputationTier);
+	ReputationBaseIntensity = GetReputationTierIntensity(ReputationTier);
+
+	ReputationAura->SetLightColor(AuraColor);
+	ReputationAura->SetIntensity(ReputationBaseIntensity);
+
+	// Scale attenuation radius with tier for more visible auras at higher tiers
+	float Radius = 100.f + ReputationTier * 30.f;
+	ReputationAura->SetAttenuationRadius(Radius);
+}
+
+void ATartariaNPC::FetchReputationTier()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	// Cache: re-fetch only every 30 seconds
+	float CurrentTime = World->GetTimeSeconds();
+	if (CurrentTime - LastReputationFetchTime < 30.f)
+		return;
+	LastReputationFetchTime = CurrentTime;
+
+	UHJGameInstance* GI = UHJGameInstance::Get(this);
+	if (!GI || !GI->ApiClient)
+		return;
+
+	FString SpecialistStr = GetSpecialistString();
+	FString Endpoint = FString::Printf(TEXT("/api/game/npc/profile/%s"), *SpecialistStr);
+
+	TWeakObjectPtr<ATartariaNPC> WeakThis(this);
+
+	FOnApiResponse CB;
+	CB.BindLambda([WeakThis](bool bOk, const FString& Body)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, bOk, Body]()
+		{
+			ATartariaNPC* Self = WeakThis.Get();
+			if (!Self || !bOk) return;
+
+			TSharedPtr<FJsonObject> Json;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Body);
+			if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
+				return;
+
+			// Navigate to profile.relationship_score
+			const TSharedPtr<FJsonObject>* ProfileObj;
+			if (Json->TryGetObjectField(TEXT("profile"), ProfileObj) && ProfileObj->IsValid())
+			{
+				int32 Score = 0;
+				if ((*ProfileObj)->TryGetNumberField(TEXT("relationship_score"), Score))
+				{
+					Self->SetReputationFromScore(Score);
+				}
+			}
+		});
+	});
+
+	GI->ApiClient->Get(Endpoint, CB);
+}
+
+// -------------------------------------------------------
+// Activity State — visual reflection of NPC behavior
+// -------------------------------------------------------
+
+ENPCActivityState ATartariaNPC::MapActivityStringToState(const FString& Activity)
+{
+	// Thinking activities: researching, reading, contemplating, analyzing
+	if (Activity == TEXT("researching") || Activity == TEXT("reading")
+		|| Activity == TEXT("contemplating") || Activity == TEXT("analyzing")
+		|| Activity == TEXT("cataloging"))
+	{
+		return ENPCActivityState::Thinking;
+	}
+
+	// Working activities: constructing, repairing, brewing, distilling
+	if (Activity == TEXT("constructing") || Activity == TEXT("repairing")
+		|| Activity == TEXT("brewing") || Activity == TEXT("distilling"))
+	{
+		return ENPCActivityState::Working;
+	}
+
+	// Social activities: negotiating, appraising, briefing
+	// We map these to Thinking as well (head nods handled as special case)
+	if (Activity == TEXT("negotiating") || Activity == TEXT("appraising")
+		|| Activity == TEXT("briefing"))
+	{
+		return ENPCActivityState::Thinking;
+	}
+
+	// Moving activities: traveling, charting, surveying, observing, calculating
+	if (Activity == TEXT("traveling") || Activity == TEXT("charting")
+		|| Activity == TEXT("surveying") || Activity == TEXT("observing")
+		|| Activity == TEXT("calculating"))
+	{
+		return ENPCActivityState::Moving;
+	}
+
+	return ENPCActivityState::Idle;
+}
+
+void ATartariaNPC::UpdateActivityVisuals(float DeltaTime)
+{
+	// Advance the activity animation timer
+	ActivityAnimTimer += DeltaTime;
+	if (ActivityAnimTimer > 2.f * PI * 100.f)
+	{
+		// Prevent float overflow after long sessions
+		ActivityAnimTimer -= 2.f * PI * 100.f;
+	}
+
+	const FString& Act = CurrentActivity;
+
+	// ── Thinking Activities ─────────────────────────────────
+	// researching / reading / contemplating / analyzing / cataloging
+	// Head tilts down 10 degrees, subtle side-to-side sway (+/-3 deg, 0.3Hz)
+	if (Act == TEXT("researching") || Act == TEXT("reading")
+		|| Act == TEXT("contemplating") || Act == TEXT("analyzing")
+		|| Act == TEXT("cataloging"))
+	{
+		if (BodyHead)
+		{
+			float SwayYaw = FMath::Sin(ActivityAnimTimer * 0.3f * 2.f * PI) * 3.f;
+			BodyHead->SetRelativeRotation(FRotator(-10.f, SwayYaw, 0.f));
+		}
+		// Arms at rest — maybe holding a book
+		if (BodyArmL)
+		{
+			BodyArmL->SetRelativeRotation(FRotator(-20.f, 0.f, -10.f));
+		}
+		if (BodyArmR)
+		{
+			BodyArmR->SetRelativeRotation(FRotator(-20.f, 0.f, 10.f));
+		}
+		return;
+	}
+
+	// ── Working Activities ─────────────────────────────────
+	// constructing / repairing / brewing / distilling
+	// Arm-level mesh oscillation (+/-5 units vertical, 1Hz) — "working" motion
+	if (Act == TEXT("constructing") || Act == TEXT("repairing")
+		|| Act == TEXT("brewing") || Act == TEXT("distilling"))
+	{
+		if (BodyArmR)
+		{
+			float ArmPump = FMath::Sin(ActivityAnimTimer * 1.0f * 2.f * PI) * 25.f;
+			BodyArmR->SetRelativeRotation(FRotator(-30.f + ArmPump, 0.f, 10.f));
+		}
+		if (BodyArmL)
+		{
+			// Left arm steady, bracing
+			BodyArmL->SetRelativeRotation(FRotator(-15.f, 0.f, -5.f));
+		}
+		// Slight forward lean for working posture
+		if (BodyTorso)
+		{
+			BodyTorso->SetRelativeRotation(FRotator(5.f, 0.f, 0.f));
+		}
+		// Head looks down at work
+		if (BodyHead)
+		{
+			BodyHead->SetRelativeRotation(FRotator(-8.f, 0.f, 0.f));
+		}
+		return;
+	}
+
+	// ── Social Activities ──────────────────────────────────
+	// negotiating / appraising / briefing
+	// Slight forward lean (5 degrees), periodic head nods (every 3 seconds)
+	if (Act == TEXT("negotiating") || Act == TEXT("appraising")
+		|| Act == TEXT("briefing"))
+	{
+		if (BodyTorso)
+		{
+			BodyTorso->SetRelativeRotation(FRotator(5.f, 0.f, 0.f));
+		}
+		if (BodyHead)
+		{
+			// Periodic nod: every 3 seconds, dip 8 degrees over ~0.5s then back up
+			float NodCycle = FMath::Fmod(ActivityAnimTimer, 3.0f);
+			float NodPitch = 0.f;
+			if (NodCycle < 0.25f)
+			{
+				// Dipping down
+				NodPitch = -8.f * (NodCycle / 0.25f);
+			}
+			else if (NodCycle < 0.5f)
+			{
+				// Coming back up
+				NodPitch = -8.f * (1.f - (NodCycle - 0.25f) / 0.25f);
+			}
+			BodyHead->SetRelativeRotation(FRotator(NodPitch, 0.f, 0.f));
+		}
+		// Hands clasped or gesturing
+		if (BodyArmL)
+		{
+			BodyArmL->SetRelativeRotation(FRotator(-10.f, 5.f, -10.f));
+		}
+		if (BodyArmR)
+		{
+			float GestureAngle = FMath::Sin(ActivityAnimTimer * 0.5f) * 8.f;
+			BodyArmR->SetRelativeRotation(FRotator(-10.f + GestureAngle, -5.f, 10.f));
+		}
+		return;
+	}
+
+	// ── Moving / Scanning Activities ──────────────────────
+	// traveling / charting / surveying / observing / calculating
+	// Slow rotation (10 degrees/sec yaw scan) — "looking around"
+	if (Act == TEXT("traveling") || Act == TEXT("charting")
+		|| Act == TEXT("surveying") || Act == TEXT("observing")
+		|| Act == TEXT("calculating"))
+	{
+		if (BodyHead)
+		{
+			// Sweep yaw: +/-30 degrees at ~10 deg/s (period ~6 seconds)
+			float ScanYaw = FMath::Sin(ActivityAnimTimer * (10.f / 30.f)) * 30.f;
+			float ScanPitch = FMath::Sin(ActivityAnimTimer * 0.15f) * 5.f;
+			BodyHead->SetRelativeRotation(FRotator(ScanPitch, ScanYaw, 0.f));
+		}
+		// One arm shading eyes or holding instrument
+		if (BodyArmR)
+		{
+			BodyArmR->SetRelativeRotation(FRotator(-40.f, 10.f, 15.f));
+		}
+		return;
+	}
+
+	// ── Idle (default) ──────────────────────────────────────
+	// Gentle breathing sway (+/-1 degree, 0.25Hz)
+	{
+		if (BodyHead)
+		{
+			float IdleSway = FMath::Sin(ActivityAnimTimer * 0.25f * 2.f * PI) * 1.f;
+			BodyHead->SetRelativeRotation(FRotator(IdleSway, 0.f, 0.f));
+		}
+		// Reset torso to neutral
+		if (BodyTorso)
+		{
+			BodyTorso->SetRelativeRotation(FRotator::ZeroRotator);
+		}
+		// Use idle variation system when actually idle
+		IdleVariationTimer += DeltaTime;
+		if (IdleVariationTimer >= NextIdleSwitchTime)
+		{
+			IdleVariationTimer = 0.f;
+			CurrentIdleVariant = FMath::RandRange(0, 3);
+			NextIdleSwitchTime = FMath::RandRange(12.f, 30.f);
+		}
+
+		switch (CurrentIdleVariant)
+		{
+		case 1:  // Look around
+			if (BodyHead)
+			{
+				float LookYaw = FMath::Sin(BreathPhase * 0.3f) * 25.f;
+				BodyHead->SetRelativeRotation(FRotator(0.f, LookYaw, 0.f));
+			}
+			break;
+		case 2:  // Inspect tool
+			if (BodyArmR)
+			{
+				float InspectAngle = -35.f + FMath::Sin(BreathPhase * 0.5f) * 5.f;
+				BodyArmR->SetRelativeRotation(FRotator(InspectAngle, 10.f, 15.f));
+			}
+			if (BodyHead)
+			{
+				BodyHead->SetRelativeRotation(FRotator(-8.f, 12.f, 0.f));
+			}
+			break;
+		case 3:  // Shift weight
+			if (BodyTorso)
+			{
+				float SwayRoll = FMath::Sin(BreathPhase * 0.4f) * 3.f;
+				BodyTorso->SetRelativeRotation(FRotator(0.f, 0.f, SwayRoll));
+			}
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+void ATartariaNPC::FetchCurrentActivity()
+{
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	float CurrentTime = World->GetTimeSeconds();
+	LastActivityFetchTime = CurrentTime;
+
+	UHJGameInstance* GI = UHJGameInstance::Get(this);
+	if (!GI || !GI->ApiClient)
+		return;
+
+	FString SpecialistStr = GetSpecialistString();
+	FString Endpoint = FString::Printf(TEXT("/api/game/npc/profile/%s"), *SpecialistStr);
+
+	TWeakObjectPtr<ATartariaNPC> WeakThis(this);
+
+	FOnApiResponse CB;
+	CB.BindLambda([WeakThis](bool bOk, const FString& Body)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, bOk, Body]()
+		{
+			ATartariaNPC* Self = WeakThis.Get();
+			if (!Self || !bOk) return;
+
+			TSharedPtr<FJsonObject> Json;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Body);
+			if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
+				return;
+
+			// Navigate to profile.current_activity
+			const TSharedPtr<FJsonObject>* ProfileObj;
+			if (Json->TryGetObjectField(TEXT("profile"), ProfileObj) && ProfileObj->IsValid())
+			{
+				FString Activity;
+				if ((*ProfileObj)->TryGetStringField(TEXT("current_activity"), Activity))
+				{
+					Self->CurrentActivity = Activity;
+					Self->ActivityState = MapActivityStringToState(Activity);
+				}
+
+				// Also update reputation while we have the profile data
+				int32 Score = 0;
+				if ((*ProfileObj)->TryGetNumberField(TEXT("relationship_score"), Score))
+				{
+					Self->SetReputationFromScore(Score);
+				}
+			}
+		});
+	});
+
+	GI->ApiClient->Get(Endpoint, CB);
+}
+
 void ATartariaNPC::OnInteract_Implementation(APlayerController* Interactor)
 {
 	UE_LOG(LogTemp, Log, TEXT("TartariaNPC: Player interacted with %s (%s)"),
@@ -618,6 +1116,9 @@ void ATartariaNPC::OnInteract_Implementation(APlayerController* Interactor)
 	OnDialogueStartedDelegate.Broadcast(NPCName, FactionKey);
 
 	SetMood(2);  // Mark as busy during conversation
+
+	// Enter dialogue mode — enables eye contact tracking + fetches reputation
+	StartDialogue();
 
 	// Send initial greeting dialogue
 	SendDialogueRequest(Interactor, TEXT("Greetings."));

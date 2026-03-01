@@ -13,6 +13,7 @@
 #include "TartariaPatentRegistry.h"
 #include "TartariaAlchemicalScales.h"
 #include "TartariaFactionBanner.h"
+#include "TartariaLandmark.h"
 #include "TartariaTypes.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -43,6 +44,7 @@ void UTartariaWorldPopulator::PopulateWorld(UWorld* World)
 	SpawnPatentRegistry(World);
 	SpawnAlchemicalScales(World);
 	SpawnFactionBanners(World);
+	SpawnLandmarks(World);
 
 	UE_LOG(LogTemp, Log, TEXT("[WorldPopulator] World population complete."));
 }
@@ -883,6 +885,60 @@ void UTartariaWorldPopulator::SpawnFactionBanners(UWorld* World)
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[WorldPopulator] Spawned %d faction banners"), SpawnCount);
+}
+
+// -------------------------------------------------------
+// Landmarks — biome navigation beacons (Task #208)
+// -------------------------------------------------------
+
+void UTartariaWorldPopulator::SpawnLandmarks(UWorld* World)
+{
+	struct FLandmarkDef
+	{
+		FName Tag;
+		ETartariaBiome Biome;
+		FVector Location;
+		float Height;
+	};
+
+	// Place each landmark at the center of its biome, elevated slightly
+	const TArray<FLandmarkDef> Landmarks = {
+		{ FName("Landmark_CLEARINGHOUSE"),  ETartariaBiome::Clearinghouse,  FVector(0.f, 0.f, 0.f),          2000.f },
+		{ FName("Landmark_SCRIPTORIUM"),    ETartariaBiome::Scriptorium,    FVector(250000.f, 0.f, 0.f),     2200.f },
+		{ FName("Landmark_MONOLITH_WARD"),  ETartariaBiome::MonolithWard,   FVector(0.f, 300000.f, 0.f),     2500.f },
+		{ FName("Landmark_FORGE_DISTRICT"), ETartariaBiome::ForgeDistrict,  FVector(-250000.f, 0.f, 0.f),    2300.f },
+		{ FName("Landmark_VOID_REACH"),     ETartariaBiome::VoidReach,      FVector(0.f, -350000.f, 0.f),    2800.f },
+	};
+
+	int32 SpawnCount = 0;
+	for (const FLandmarkDef& Def : Landmarks)
+	{
+		if (HasActorWithTag(World, Def.Tag)) continue;
+
+		FActorSpawnParameters Params;
+		Params.Name = Def.Tag;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		ATartariaLandmark* Landmark = World->SpawnActor<ATartariaLandmark>(
+			ATartariaLandmark::StaticClass(), Def.Location, FRotator::ZeroRotator, Params);
+
+		if (Landmark)
+		{
+			Landmark->OwningBiome = Def.Biome;
+			Landmark->LandmarkHeight = Def.Height;
+			Landmark->Tags.Add(Def.Tag);
+
+			// ConfigureForBiome() is called in BeginPlay, but since we set
+			// OwningBiome after spawn, call it again explicitly
+			Landmark->ConfigureForBiome();
+
+			++SpawnCount;
+			UE_LOG(LogTemp, Log, TEXT("[WorldPopulator] Spawned landmark for biome %d at %s (height=%.0f)"),
+				static_cast<int32>(Def.Biome), *Def.Location.ToString(), Def.Height);
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[WorldPopulator] Spawned %d biome landmarks"), SpawnCount);
 }
 
 // -------------------------------------------------------

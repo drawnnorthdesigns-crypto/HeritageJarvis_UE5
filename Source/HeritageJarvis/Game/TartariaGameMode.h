@@ -21,6 +21,9 @@ class ATartariaSolarSystemManager;
 class ATartariaQuestMarker;
 class ATartariaLevelStreamManager;
 
+/** Delegate broadcast when a pipeline project completes materialization. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectCompleted, const FString&, ProjectId);
+
 /**
  * ATartariaGameMode — Game mode for the Tartaria open world.
  *
@@ -143,6 +146,18 @@ public:
 
 	/** Current zone difficulty (updated on zone change). */
 	int32 CurrentZoneDifficulty = 1;
+
+	// -------------------------------------------------------
+	// Project Completion Delegate
+	// -------------------------------------------------------
+
+	/** Broadcast when a pipeline project finishes materialization. */
+	UPROPERTY(BlueprintAssignable, Category = "Tartaria")
+	FOnProjectCompleted OnProjectCompleted;
+
+	/** Notify all listeners that a project has completed. */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria")
+	void NotifyProjectCompleted(const FString& ProjectId);
 
 private:
 

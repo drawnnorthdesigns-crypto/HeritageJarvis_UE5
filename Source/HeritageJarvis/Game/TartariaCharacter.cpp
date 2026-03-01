@@ -17,12 +17,18 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
+#include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
 #include "TimerManager.h"
 #include "Async/Async.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 ATartariaCharacter::ATartariaCharacter()
 {
@@ -70,6 +76,20 @@ ATartariaCharacter::ATartariaCharacter()
 	WeaponMesh->SetRelativeScale3D(FVector(0.1f, 0.1f, 0.1f));  // mm to cm scaling handled by loader
 	WeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	WeaponMesh->SetVisibility(false);  // Hidden until weapon equipped
+
+	// Dynamic weapon hitbox (Task #203) — attached to right arm, sized from CAD data
+	WeaponHitbox = CreateDefaultSubobject<UBoxComponent>(TEXT("WeaponHitbox"));
+	WeaponHitbox->SetupAttachment(AvatarArmR);
+	WeaponHitbox->SetRelativeLocation(FVector(0.f, 0.f, -50.f));  // Same anchor as weapon mesh
+	WeaponHitbox->SetBoxExtent(FVector(5.f, 5.f, 25.f));  // Default extents (overridden by ApplyWeaponStats)
+	WeaponHitbox->SetCollisionProfileName(TEXT("OverlapAllDynamic"));
+	WeaponHitbox->SetGenerateOverlapEvents(true);
+	WeaponHitbox->SetCollisionEnabled(ECollisionEnabled::NoCollision);  // Disabled until attack
+	WeaponHitbox->SetHiddenInGame(true);
+#if WITH_EDITORONLY_DATA
+	WeaponHitbox->ShapeColor = FColor::Red;
+	WeaponHitbox->SetLineThickness(2.0f);
+#endif
 }
 
 void ATartariaCharacter::BeginPlay()
@@ -116,19 +136,42 @@ void ATartariaCharacter::Tick(float DeltaTime)
 	// ── Phase 1+2: Movement Grounding & Combat Feel ──────────────
 	float DT = DeltaTime;
 
-	// ── Footstep Timer ───────────────────────────────────────────
+	// ── Footstep Timer (Material-Aware, Task #205) ──────────────
 	bool bMoving = GetVelocity().Size2D() > 10.f;
 	bool bOnGround = GetCharacterMovement()->IsMovingOnGround();
 	if (bMoving && bOnGround)
 	{
-		float StepInterval = bIsSprinting ? 0.25f : 0.4f;
+		// Determine footstep interval based on movement mode.
+		// Walking=0.5s, Sprinting=0.35s, Crouching=0.7s.
+		// Add slight random variation (+/-10%) to prevent mechanical feel.
+		float BaseInterval;
+		if (GetCharacterMovement()->IsCrouching())
+			BaseInterval = 0.7f;
+		else if (bIsSprinting)
+			BaseInterval = 0.35f;
+		else
+			BaseInterval = 0.5f;
+
+		float StepInterval = BaseInterval * FMath::RandRange(0.9f, 1.1f);
+
 		FootstepTimer += DT;
 		if (FootstepTimer >= StepInterval)
 		{
 			FootstepTimer = 0.f;
-			// Broadcast footstep event (sound hook for Blueprint/audio system)
+
+			// Refresh floor material periodically (throttled)
+			FloorMaterialCheckTimer += StepInterval;
+			if (FloorMaterialCheckTimer >= 0.3f)
+			{
+				CachedFloorMaterial = GetFloorMaterial();
+				FloorMaterialCheckTimer = 0.f;
+			}
+
+			// Broadcast footstep event (Blueprint hook)
 			OnFootstep.Broadcast(bIsSprinting);
-			UTartariaSoundManager::PlayFootstep(this, bIsSprinting);
+
+			// Play material-aware footstep sound
+			PlayMaterialFootstep();
 		}
 	}
 	else
@@ -310,7 +353,8 @@ void ATartariaCharacter::Tick(float DeltaTime)
 	// ── Melee Attack Animation ──────────────────────────────────
 	if (bIsAttacking)
 	{
-		AttackTimer += DT * AttackSpeedMult;
+		// Apply both stamina-based and weapon-weight-based speed modifiers
+		AttackTimer += DT * AttackSpeedMult * WeaponSpeedMult;
 
 		// Swing the weapon mesh (or right arm if no weapon)
 		float SwingPhase = AttackTimer / AttackDuration;
@@ -328,12 +372,25 @@ void ATartariaCharacter::Tick(float DeltaTime)
 			AvatarArmR->SetRelativeRotation(FRotator(PunchReturn, 0.f, 0.f));
 		}
 
-		// Hit detection window
+		// Enable weapon hitbox during the active hit window (Task #203)
+		if (SwingPhase >= 0.2f && SwingPhase <= 0.6f)
+		{
+			EnableWeaponHitbox();
+		}
+		else
+		{
+			DisableWeaponHitbox();
+		}
+
+		// Hit detection window — use weapon stats for reach and damage
 		if (SwingPhase >= 0.2f && SwingPhase <= 0.6f && !bAttackHitChecked)
 		{
-			// Sphere sweep in front of player
+			// Use weapon reach from combat stats if available, otherwise default
+			float WeaponReach = EquippedWeaponStats.bIsValid ? EquippedWeaponStats.Reach : 200.f;
+
+			// Sphere sweep in front of player using weapon reach
 			FVector TraceStart = GetActorLocation() + GetActorForwardVector() * 50.f;
-			FVector TraceEnd = TraceStart + GetActorForwardVector() * 200.f;
+			FVector TraceEnd = TraceStart + GetActorForwardVector() * WeaponReach;
 			float TraceRadius = 60.f;
 
 			FCollisionQueryParams QueryParams;
@@ -348,15 +405,34 @@ void ATartariaCharacter::Tick(float DeltaTime)
 			if (bHit)
 			{
 				bAttackHitChecked = true;
-				UTartariaSoundManager::PlayCombatHit(this);
 
 				for (const FHitResult& Hit : Hits)
 				{
 					AActor* HitActor = Hit.GetActor();
 					if (!HitActor) continue;
 
-					// Calculate damage
-					float BaseDamage = 15.f;
+					// Use weapon-derived damage if valid, otherwise default (Task #203)
+					float BaseDamage = EquippedWeaponStats.bIsValid
+						? static_cast<float>(EquippedWeaponStats.BaseDamage)
+						: 15.f;
+
+					// Determine target material from actor tags for
+					// material-specific combat hit sounds (Task #205).
+					// Default to Stone for generic enemies.
+					ETartariaPhysicalMaterial TargetMat = ETartariaPhysicalMaterial::Stone;
+					if (HitActor->Tags.Contains(TEXT("Metal")))
+						TargetMat = ETartariaPhysicalMaterial::Metal;
+					else if (HitActor->Tags.Contains(TEXT("Wood")))
+						TargetMat = ETartariaPhysicalMaterial::Wood;
+					else if (HitActor->Tags.Contains(TEXT("Crystal")))
+						TargetMat = ETartariaPhysicalMaterial::Crystal;
+					else if (HitActor->Tags.Contains(TEXT("Earth")))
+						TargetMat = ETartariaPhysicalMaterial::Earth;
+
+					// Play material-aware combat hit (weapon material vs target material)
+					UTartariaSoundManager::PlayMaterialCombatHit(
+						this, WeaponMaterialType, TargetMat,
+						Hit.ImpactPoint, BaseDamage);
 
 					// Apply damage to enemy actors
 					ATartariaEnemyActor* Enemy = Cast<ATartariaEnemyActor>(HitActor);
@@ -365,12 +441,15 @@ void ATartariaCharacter::Tick(float DeltaTime)
 						// Trigger combat choreography - player wins if we hit them
 						Enemy->BeginCombatChoreography(true);
 
-						// Knockback
+						// Knockback — scale with weapon weight (Task #203)
+						float KnockbackForce = EquippedWeaponStats.bIsValid
+							? 400.f + EquippedWeaponStats.WeightKg * 50.f
+							: 600.f;
 						FVector KnockDir = (HitActor->GetActorLocation() - GetActorLocation()).GetSafeNormal();
 						ACharacter* HitChar = Cast<ACharacter>(HitActor);
 						if (HitChar)
 						{
-							HitChar->LaunchCharacter(KnockDir * 600.f + FVector(0, 0, 200.f), true, true);
+							HitChar->LaunchCharacter(KnockDir * KnockbackForce + FVector(0, 0, 200.f), true, true);
 						}
 
 						// Hitstop
@@ -381,13 +460,17 @@ void ATartariaCharacter::Tick(float DeltaTime)
 							UGameplayStatics::SetGlobalTimeDilation(this, 0.1f);
 						}
 
-						// Camera shake
-						ApplyScreenShake(0.8f, 0.2f);
+						// Camera shake — heavier weapons shake more
+						float ShakeIntensity = EquippedWeaponStats.bIsValid
+							? FMath::Clamp(0.5f + EquippedWeaponStats.WeightKg * 0.1f, 0.5f, 1.5f)
+							: 0.8f;
+						ApplyScreenShake(ShakeIntensity, 0.2f);
 
 						OnMeleeHit.Broadcast(HitActor, BaseDamage);
 
-						UE_LOG(LogTemp, Log, TEXT("TartariaCharacter: Melee hit on %s for %.1f damage"),
-							*HitActor->GetName(), BaseDamage);
+						UE_LOG(LogTemp, Log, TEXT("TartariaCharacter: Melee hit on %s for %.1f damage (reach=%.0f, weapon=%d, target=%d)"),
+							*HitActor->GetName(), BaseDamage, WeaponReach,
+							(int32)WeaponMaterialType, (int32)TargetMat);
 					}
 				}
 			}
@@ -409,6 +492,7 @@ void ATartariaCharacter::Tick(float DeltaTime)
 		{
 			bIsAttacking = false;
 			AttackCooldownTimer = AttackCooldown;
+			DisableWeaponHitbox();  // Ensure hitbox is off after attack ends
 
 			// Reset weapon/arm rotation
 			if (WeaponMesh)
@@ -637,6 +721,97 @@ void ATartariaCharacter::SpawnFootstepDust()
 			D->SetActorScale3D(Scale * 1.3f);  // Expand
 		}
 	}, 0.2f, true);
+}
+
+// -------------------------------------------------------
+// Material-Specific Audio (Task #205)
+// -------------------------------------------------------
+
+ETartariaPhysicalMaterial ATartariaCharacter::GetFloorMaterial() const
+{
+	UWorld* World = GetWorld();
+	if (!World) return ETartariaPhysicalMaterial::Stone;
+
+	// Line trace downward from the character's feet (50 units below capsule base)
+	FVector TraceStart = GetActorLocation();
+	FVector TraceEnd = TraceStart - FVector(0.f, 0.f, GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 50.f);
+
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(this);
+	QueryParams.bReturnPhysicalMaterial = true;
+
+	FHitResult Hit;
+	bool bHitSomething = World->LineTraceSingleByChannel(
+		Hit, TraceStart, TraceEnd,
+		ECollisionChannel::ECC_Visibility, QueryParams);
+
+	if (!bHitSomething) return ETartariaPhysicalMaterial::Stone;
+
+	// ── Strategy 1: Check actor tags ─────────────────────────
+	// Actors (buildings, terrain chunks) can be tagged with material names
+	// to override the default mapping.
+	AActor* HitActor = Hit.GetActor();
+	if (HitActor)
+	{
+		if (HitActor->Tags.Contains(TEXT("Metal")))
+			return ETartariaPhysicalMaterial::Metal;
+		if (HitActor->Tags.Contains(TEXT("Wood")))
+			return ETartariaPhysicalMaterial::Wood;
+		if (HitActor->Tags.Contains(TEXT("Crystal")))
+			return ETartariaPhysicalMaterial::Crystal;
+		if (HitActor->Tags.Contains(TEXT("Earth")))
+			return ETartariaPhysicalMaterial::Earth;
+		if (HitActor->Tags.Contains(TEXT("Water")))
+			return ETartariaPhysicalMaterial::Water;
+		if (HitActor->Tags.Contains(TEXT("Stone")))
+			return ETartariaPhysicalMaterial::Stone;
+	}
+
+	// ── Strategy 2: Check UPhysicalMaterial on the surface ───
+	// UE5 physical materials can be assigned in the physics asset.
+	// We map the material's friction to a rough surface classification.
+	UPhysicalMaterial* PhysMat = Hit.PhysMaterial.Get();
+	if (PhysMat)
+	{
+		FString MatName = PhysMat->GetName().ToLower();
+		if (MatName.Contains(TEXT("metal")) || MatName.Contains(TEXT("iron")))
+			return ETartariaPhysicalMaterial::Metal;
+		if (MatName.Contains(TEXT("wood")) || MatName.Contains(TEXT("plank")))
+			return ETartariaPhysicalMaterial::Wood;
+		if (MatName.Contains(TEXT("crystal")) || MatName.Contains(TEXT("glass")))
+			return ETartariaPhysicalMaterial::Crystal;
+		if (MatName.Contains(TEXT("earth")) || MatName.Contains(TEXT("dirt")) || MatName.Contains(TEXT("mud")) || MatName.Contains(TEXT("grass")))
+			return ETartariaPhysicalMaterial::Earth;
+		if (MatName.Contains(TEXT("water")) || MatName.Contains(TEXT("liquid")))
+			return ETartariaPhysicalMaterial::Water;
+	}
+
+	// ── Strategy 3: Map by biome (fallback) ──────────────────
+	// Different biome zones have characteristic ground materials.
+	if (CurrentBiome == TEXT("FORGE_DISTRICT"))
+		return ETartariaPhysicalMaterial::Metal;
+	if (CurrentBiome == TEXT("SCRIPTORIUM"))
+		return ETartariaPhysicalMaterial::Wood;
+	if (CurrentBiome == TEXT("MONOLITH_WARD"))
+		return ETartariaPhysicalMaterial::Crystal;
+	if (CurrentBiome == TEXT("VOID_REACH"))
+		return ETartariaPhysicalMaterial::Earth;
+
+	// Default: stone is the most common Tartarian surface
+	return ETartariaPhysicalMaterial::Stone;
+}
+
+void ATartariaCharacter::PlayMaterialFootstep()
+{
+	// Compute foot location (bottom of capsule)
+	FVector FootLoc = GetActorLocation() -
+		FVector(0.f, 0.f, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+
+	// Speed fraction: how fast the player is moving relative to max sprint speed
+	float CurrentSpeed = GetVelocity().Size2D();
+	float SpeedFraction = FMath::Clamp(CurrentSpeed / SprintSpeed, 0.f, 1.f);
+
+	UTartariaSoundManager::PlayMaterialFootstep(this, CachedFloorMaterial, FootLoc, SpeedFraction);
 }
 
 // -------------------------------------------------------
@@ -880,6 +1055,14 @@ void ATartariaCharacter::Landed(const FHitResult& Hit)
 		{
 			ApplyScreenShake(BumpScale * 2.f, 0.15f);
 		}
+
+		// Material-specific landing impact (Task #205)
+		// Refresh floor material and play impact sound proportional to fall speed
+		CachedFloorMaterial = GetFloorMaterial();
+		FVector FootLoc = GetActorLocation() -
+			FVector(0.f, 0.f, GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
+		UTartariaSoundManager::PlayMaterialImpact(
+			this, CachedFloorMaterial, FootLoc, BumpScale);
 	}
 }
 
@@ -1126,6 +1309,9 @@ void ATartariaCharacter::EquipWeaponMesh(const FString& WeaponId)
 			// Apply rarity-based material preset
 			UHJMeshLoader::ApplyRarityMaterial(Self->WeaponMesh, Rarity);
 
+			// Fetch combat stats from mesh metadata to configure hitbox (Task #203)
+			Self->FetchAndApplyWeaponCombatStats(Self->EquippedWeaponId);
+
 			UE_LOG(LogTemp, Log, TEXT("TartariaCharacter: Weapon mesh loaded for %s (rarity=%s)"),
 				*Self->EquippedWeaponId, *Rarity);
 		});
@@ -1142,6 +1328,11 @@ void ATartariaCharacter::UnequipWeapon()
 		WeaponMesh->ClearAllMeshSections();
 		WeaponMesh->SetVisibility(false);
 	}
+
+	// Reset weapon combat stats and disable hitbox (Task #203)
+	EquippedWeaponStats = FWeaponCombatStats();
+	WeaponSpeedMult = 1.0f;
+	DisableWeaponHitbox();
 }
 
 // -------------------------------------------------------
@@ -1153,9 +1344,12 @@ void ATartariaCharacter::MeleeAttack()
 	if (bIsAttacking || bIsDodging || bIsDead) return;
 	if (AttackCooldownTimer > 0.f) return;
 
+	// Heavier weapons cost more stamina (Task #203)
 	float StaminaCost = AttackStaminaCost;
-	// Heavier weapons cost more stamina
-	// (WeaponMesh weight would modify this in the future)
+	if (EquippedWeaponStats.bIsValid)
+	{
+		StaminaCost += EquippedWeaponStats.WeightKg * 2.0f;
+	}
 	if (!ConsumeStamina(StaminaCost)) return;
 
 	bIsAttacking = true;
@@ -1168,4 +1362,126 @@ void ATartariaCharacter::MeleeAttack()
 void ATartariaCharacter::OnAttackInput()
 {
 	MeleeAttack();
+}
+
+// -------------------------------------------------------
+// Dynamic Weapon Hitboxes from CAD Data (Task #203)
+// -------------------------------------------------------
+
+void ATartariaCharacter::ApplyWeaponStats(const FWeaponCombatStats& Stats)
+{
+	EquippedWeaponStats = Stats;
+	EquippedWeaponStats.bIsValid = true;
+
+	// Configure the dynamic hitbox extents from mesh geometry
+	if (WeaponHitbox)
+	{
+		WeaponHitbox->SetBoxExtent(Stats.HitboxExtents);
+		UE_LOG(LogTemp, Log,
+			TEXT("TartariaCharacter: WeaponHitbox extents set to (%.1f, %.1f, %.1f)"),
+			Stats.HitboxExtents.X, Stats.HitboxExtents.Y, Stats.HitboxExtents.Z);
+	}
+
+	// Set weapon-weight-based attack speed modifier
+	WeaponSpeedMult = FMath::Clamp(Stats.AttackSpeed, 0.3f, 1.5f);
+
+	UE_LOG(LogTemp, Log,
+		TEXT("TartariaCharacter: Applied weapon stats — reach=%.1f, weight=%.2fkg, "
+		     "damage=%d, speed=%.2f, hitbox=(%.1f,%.1f,%.1f)"),
+		Stats.Reach, Stats.WeightKg, Stats.BaseDamage, Stats.AttackSpeed,
+		Stats.HitboxExtents.X, Stats.HitboxExtents.Y, Stats.HitboxExtents.Z);
+}
+
+void ATartariaCharacter::EnableWeaponHitbox()
+{
+	if (WeaponHitbox && WeaponHitbox->GetCollisionEnabled() == ECollisionEnabled::NoCollision)
+	{
+		WeaponHitbox->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	}
+}
+
+void ATartariaCharacter::DisableWeaponHitbox()
+{
+	if (WeaponHitbox && WeaponHitbox->GetCollisionEnabled() != ECollisionEnabled::NoCollision)
+	{
+		WeaponHitbox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+}
+
+void ATartariaCharacter::FetchAndApplyWeaponCombatStats(const FString& WeaponId)
+{
+	UHJGameInstance* GI = UHJGameInstance::Get(this);
+	if (!GI || !GI->ApiClient)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("TartariaCharacter: Cannot fetch combat stats — ApiClient unavailable"));
+		return;
+	}
+
+	// Fetch combat stats from the mesh combat-stats endpoint
+	FString StatsEndpoint = FString::Printf(
+		TEXT("/api/mesh/combat-stats/weapon_%s/weapon"), *WeaponId);
+	TWeakObjectPtr<ATartariaCharacter> WeakThis(this);
+
+	FOnApiResponse CB;
+	CB.BindLambda([WeakThis](bool bOk, const FString& Body)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, bOk, Body]()
+		{
+			ATartariaCharacter* Self = WeakThis.Get();
+			if (!Self) return;
+
+			if (!bOk)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("TartariaCharacter: Failed to fetch combat stats, using defaults"));
+				return;
+			}
+
+			// Parse JSON response
+			TSharedPtr<FJsonObject> Root;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Body);
+			if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("TartariaCharacter: Failed to parse combat stats JSON"));
+				return;
+			}
+
+			bool bSuccess = false;
+			Root->TryGetBoolField(TEXT("success"), bSuccess);
+			if (!bSuccess) return;
+
+			const TSharedPtr<FJsonObject>* StatsObj = nullptr;
+			if (!Root->TryGetObjectField(TEXT("combat_stats"), StatsObj) || !StatsObj)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("TartariaCharacter: combat_stats object missing from response"));
+				return;
+			}
+
+			// Parse combat stats into struct
+			FWeaponCombatStats Stats;
+			Stats.Reach = static_cast<float>((*StatsObj)->GetNumberField(TEXT("reach_cm")));
+			Stats.WeightKg = static_cast<float>((*StatsObj)->GetNumberField(TEXT("weight_kg")));
+			Stats.BaseDamage = static_cast<int32>((*StatsObj)->GetNumberField(TEXT("base_damage")));
+			Stats.AttackSpeed = static_cast<float>((*StatsObj)->GetNumberField(TEXT("attack_speed")));
+
+			// Parse hitbox extents array [hx, hy, hz]
+			const TArray<TSharedPtr<FJsonValue>>* ExtentsArr = nullptr;
+			if ((*StatsObj)->TryGetArrayField(TEXT("hitbox_extents"), ExtentsArr) &&
+				ExtentsArr && ExtentsArr->Num() >= 3)
+			{
+				Stats.HitboxExtents = FVector(
+					static_cast<float>((*ExtentsArr)[0]->AsNumber()),
+					static_cast<float>((*ExtentsArr)[1]->AsNumber()),
+					static_cast<float>((*ExtentsArr)[2]->AsNumber())
+				);
+			}
+
+			Self->ApplyWeaponStats(Stats);
+		});
+	});
+
+	GI->ApiClient->Get(StatsEndpoint, CB);
 }

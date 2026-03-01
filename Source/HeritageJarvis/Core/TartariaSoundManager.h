@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "TartariaTypes.h"
 #include "TartariaSoundManager.generated.h"
 
 class USoundBase;
@@ -10,6 +11,12 @@ class USoundBase;
  * Provides static methods for common game sounds.
  * Uses engine tone sounds as placeholders (no imported assets required).
  * Called from Character, NPC, ForgeBuilding, etc.
+ *
+ * Material-Specific Impact Audio (Task #205):
+ * Surfaces are classified by ETartariaPhysicalMaterial and each carries an
+ * FMaterialAudioProfile that drives pitch, decay, resonance, and volume
+ * of impact/footstep/combat sounds. Profiles are initialized once and
+ * queried via GetMaterialProfile().
  */
 UCLASS()
 class HERITAGEJARVIS_API UTartariaSoundManager : public UObject
@@ -33,7 +40,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Sound", meta = (WorldContext = "WorldContextObject"))
 	static void PlayHarvest(UObject* WorldContextObject);
 
-	/** Play a combat impact sound. */
+	/** Play a generic combat impact sound (legacy, no material info). */
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Sound", meta = (WorldContext = "WorldContextObject"))
 	static void PlayCombatHit(UObject* WorldContextObject);
 
@@ -49,7 +56,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Sound", meta = (WorldContext = "WorldContextObject"))
 	static void PlayForgeSeal(UObject* WorldContextObject);
 
-	/** Play a footstep sound. */
+	/** Play a footstep sound (legacy, no material info). */
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Sound", meta = (WorldContext = "WorldContextObject"))
 	static void PlayFootstep(UObject* WorldContextObject, bool bSprinting);
 
@@ -61,7 +68,76 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tartaria|Sound", meta = (WorldContext = "WorldContextObject"))
 	static void PlayLevelUp(UObject* WorldContextObject);
 
+	// =============================================================
+	// Material-Specific Impact Audio (Task #205)
+	// =============================================================
+
+	/**
+	 * Get the audio profile for a physical material type.
+	 * Returns a const reference to the statically-initialized profile.
+	 */
+	static const FMaterialAudioProfile& GetMaterialProfile(ETartariaPhysicalMaterial Material);
+
+	/**
+	 * Play a material-specific impact sound at a world location.
+	 * Pitch is randomized around BasePitch, volume scales with Intensity,
+	 * and resonance controls sustain/reverb feel via layered playback.
+	 *
+	 * @param WorldContextObject  Any UObject with a valid world context.
+	 * @param Material            The surface material being impacted.
+	 * @param Location            World-space location for 3D attenuation.
+	 * @param Intensity           Normalized impact force (0-1). Scales volume.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Sound", meta = (WorldContext = "WorldContextObject"))
+	static void PlayMaterialImpact(UObject* WorldContextObject,
+		ETartariaPhysicalMaterial Material, FVector Location, float Intensity = 0.5f);
+
+	/**
+	 * Play a material-aware footstep at the character's location.
+	 * Uses the floor material profile for pitch/volume characteristics.
+	 *
+	 * @param WorldContextObject  Any UObject with a valid world context.
+	 * @param Material            The floor surface material under the player.
+	 * @param Location            Foot location in world space.
+	 * @param SpeedFraction       Current speed / max speed (0-1). Affects volume.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Sound", meta = (WorldContext = "WorldContextObject"))
+	static void PlayMaterialFootstep(UObject* WorldContextObject,
+		ETartariaPhysicalMaterial Material, FVector Location, float SpeedFraction = 0.5f);
+
+	/**
+	 * Play a material-aware combat hit sound.
+	 * Blends the weapon material and target material audio profiles to
+	 * produce a layered impact: weapon ring + target crack/thud.
+	 *
+	 * @param WorldContextObject  Any UObject with a valid world context.
+	 * @param WeaponMaterial      Material of the attacking weapon.
+	 * @param TargetMaterial      Material of the target surface/armor.
+	 * @param Location            World-space hit point.
+	 * @param Damage              Raw damage dealt (higher = louder + deeper).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tartaria|Sound", meta = (WorldContext = "WorldContextObject"))
+	static void PlayMaterialCombatHit(UObject* WorldContextObject,
+		ETartariaPhysicalMaterial WeaponMaterial, ETartariaPhysicalMaterial TargetMaterial,
+		FVector Location, float Damage = 15.f);
+
 private:
 	/** Play a built-in engine sound by path, with volume and pitch. */
 	static void PlayEngineSound(UObject* WorldContextObject, float Volume = 1.0f, float Pitch = 1.0f);
+
+	/** Play a built-in engine sound at a 3D location, with volume and pitch. */
+	static void PlayEngineSoundAtLocation(UObject* WorldContextObject,
+		FVector Location, float Volume = 1.0f, float Pitch = 1.0f);
+
+	/**
+	 * Initialize the static material profile table (called once lazily).
+	 * Profiles map ETartariaPhysicalMaterial -> FMaterialAudioProfile.
+	 */
+	static void EnsureProfilesInitialized();
+
+	/** Static profile array indexed by ETartariaPhysicalMaterial. */
+	static TArray<FMaterialAudioProfile> MaterialProfiles;
+
+	/** Whether MaterialProfiles has been populated. */
+	static bool bProfilesInitialized;
 };

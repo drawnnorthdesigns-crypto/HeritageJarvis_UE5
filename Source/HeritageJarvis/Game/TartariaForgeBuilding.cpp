@@ -1,8 +1,10 @@
 #include "TartariaForgeBuilding.h"
 #include "TartariaGameMode.h"
 #include "TartariaTerminal.h"
+#include "TartariaRewardVFX.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
+#include "Components/TextRenderComponent.h"
 #include "ProceduralMeshComponent.h"
 #include "Core/HJMeshLoader.h"
 #include "Core/HJGameInstance.h"
@@ -11,6 +13,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Kismet/GameplayStatics.h"
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Async/Async.h"
@@ -83,6 +86,32 @@ ATartariaForgeBuilding::ATartariaForgeBuilding()
 	PedestalLight->SetIntensity(0.f); // Off until model loads
 	PedestalLight->SetLightColor(FLinearColor(0.9f, 0.95f, 1.0f)); // Cool white
 	PedestalLight->SetAttenuationRadius(400.f);
+
+	// ── Completion Burst Light: golden upward flash on pipeline completion ──
+	CompletionBurstLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("CompletionBurstLight"));
+	CompletionBurstLight->SetupAttachment(PedestalMesh);
+	CompletionBurstLight->SetRelativeLocation(FVector(0.f, 0.f, 200.f));
+	CompletionBurstLight->SetIntensity(0.f); // Off until burst
+	CompletionBurstLight->SetLightColor(FLinearColor(1.0f, 0.85f, 0.3f)); // Bright gold
+	CompletionBurstLight->SetAttenuationRadius(1200.f);
+
+	// ── Forge Queue Counter: Progress-driven chimney light ──
+	ChimneyLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("ChimneyLight"));
+	ChimneyLight->SetupAttachment(RootComponent);
+	ChimneyLight->SetRelativeLocation(FVector(120.f, 0.f, 550.f));
+	ChimneyLight->SetIntensity(500.f); // Dim idle default
+	ChimneyLight->SetLightColor(FLinearColor(0.4f, 0.4f, 0.4f)); // Grey when idle
+	ChimneyLight->SetAttenuationRadius(700.f);
+
+	// ── Forge Queue Counter: Floating progress text ──
+	ProgressText = CreateDefaultSubobject<UTextRenderComponent>(TEXT("ProgressText"));
+	ProgressText->SetupAttachment(RootComponent);
+	ProgressText->SetRelativeLocation(FVector(0.f, 0.f, 650.f));
+	ProgressText->SetRelativeRotation(FRotator(0.f, 180.f, 0.f));
+	ProgressText->SetText(FText::FromString(TEXT("Forge Idle")));
+	ProgressText->SetTextRenderColor(FColor(136, 136, 136)); // Grey
+	ProgressText->SetWorldSize(24.f);
+	ProgressText->SetHorizontalAlignment(EHorizTextAligment::EHTA_Center);
 }
 
 // -------------------------------------------------------
@@ -437,6 +466,184 @@ void ATartariaForgeBuilding::Tick(float DeltaTime)
 	// Only run forge effects for Forge-type buildings
 	if (BuildingType != ETartariaBuildingType::Forge) return;
 
+	// ── Materialization Burst Animation ──
+	if (bMaterializationBurstActive)
+	{
+		BurstElapsed += DeltaTime;
+		float T = BurstElapsed / BurstDuration;
+
+		// Phase 1 (0-0.3s): Pedestal scale up 1.0 -> 1.3
+		if (BurstElapsed < 0.3f)
+		{
+			float ScaleT = BurstElapsed / 0.3f;
+			float ScaleFactor = 1.0f + 0.3f * FMath::InterpEaseOut(0.f, 1.f, ScaleT, 2.0f);
+			if (PedestalMesh)
+			{
+				PedestalMesh->SetRelativeScale3D(OriginalPedestalScale * ScaleFactor);
+			}
+		}
+		// Phase 2 (0.3-0.8s): Pedestal scale back down 1.3 -> 1.0
+		else if (BurstElapsed < 0.8f)
+		{
+			float ScaleT = (BurstElapsed - 0.3f) / 0.5f;
+			float ScaleFactor = 1.3f - 0.3f * FMath::InterpEaseIn(0.f, 1.f, ScaleT, 2.0f);
+			if (PedestalMesh)
+			{
+				PedestalMesh->SetRelativeScale3D(OriginalPedestalScale * ScaleFactor);
+			}
+		}
+
+		// Phase 1 (0-0.5s): Building light stays bright gold
+		if (BurstElapsed >= 0.5f && BurstElapsed < BurstDuration)
+		{
+			// Fade building light back to normal over remaining time
+			float FadeT = (BurstElapsed - 0.5f) / (BurstDuration - 0.5f);
+			float FadeIntensity = FMath::Lerp(BaseForgeIntensity * 5.0f,
+				bForgeActive ? BaseForgeIntensity : IdleIntensity, FadeT);
+			if (BuildingLight)
+			{
+				BuildingLight->SetIntensity(FadeIntensity);
+				// Transition color back from gold to forge color
+				FLinearColor LerpColor = FMath::Lerp(
+					FLinearColor(1.0f, 0.9f, 0.4f), BaseForgeColor, FadeT);
+				BuildingLight->SetLightColor(LerpColor);
+			}
+		}
+
+		// Fade completion burst light over full duration
+		if (CompletionBurstLight)
+		{
+			float BurstFade = FMath::Clamp(1.0f - T, 0.f, 1.f);
+			CompletionBurstLight->SetIntensity(25000.f * BurstFade * BurstFade);
+		}
+
+		// Fade window emissive back to normal
+		float WindowEmissive = FMath::Lerp(15.0f, bForgeActive ? 5.0f : 2.0f, FMath::Clamp(T, 0.f, 1.f));
+		for (int32 i = 0; i < WindowMaterials.Num(); ++i)
+		{
+			if (WindowMaterials[i])
+			{
+				WindowMaterials[i]->SetScalarParameterValue(TEXT("Emissive"), WindowEmissive);
+			}
+		}
+
+		// End burst
+		if (BurstElapsed >= BurstDuration)
+		{
+			bMaterializationBurstActive = false;
+			if (PedestalMesh)
+			{
+				PedestalMesh->SetRelativeScale3D(OriginalPedestalScale);
+			}
+			if (CompletionBurstLight)
+			{
+				CompletionBurstLight->SetIntensity(0.f);
+			}
+			// Restore window colors
+			FLinearColor ForgeGlow(1.0f, 0.6f, 0.15f);
+			for (int32 i = 0; i < WindowMaterials.Num(); ++i)
+			{
+				if (WindowMaterials[i])
+				{
+					WindowMaterials[i]->SetVectorParameterValue(TEXT("Color"), ForgeGlow);
+				}
+			}
+		}
+	}
+
+	// ── Forge Queue Counter: Poll every 5 seconds ──
+	QueuePollTimer += DeltaTime;
+	if (QueuePollTimer >= 5.0f)
+	{
+		QueuePollTimer = 0.0f;
+		PollQueueStatus();
+	}
+
+	// ── Live Proxy: Poll every 2 seconds while forge has active job ──
+	if (bQueueHasActiveJob || bProxyActive)
+	{
+		ProxyPollTimer += DeltaTime;
+		if (ProxyPollTimer >= 2.0f)
+		{
+			ProxyPollTimer = 0.0f;
+			PollLiveProxy();
+		}
+	}
+
+	// ── Live Proxy: Detect job completion (active -> inactive transition) ──
+	if (bPreviousQueueHasActiveJob && !bQueueHasActiveJob && bProxyActive)
+	{
+		// Job just completed — solidify the proxy geometry
+		SolidifyProxy();
+
+		// Schedule proxy clear after 3 seconds to show solidified result
+		ProxyClearCountdown = 3.0f;
+	}
+	bPreviousQueueHasActiveJob = bQueueHasActiveJob;
+
+	// ── Live Proxy: Countdown to clear after solidification ──
+	if (ProxyClearCountdown > 0.0f)
+	{
+		ProxyClearCountdown -= DeltaTime;
+		if (ProxyClearCountdown <= 0.0f)
+		{
+			ProxyClearCountdown = -1.0f;
+			ClearProxyGeometry();
+		}
+	}
+
+	// ── Live Proxy: Scale-up animations for newly spawned primitives ──
+	for (int32 i = ProxyScaleAnims.Num() - 1; i >= 0; --i)
+	{
+		FProxyScaleAnim& Anim = ProxyScaleAnims[i];
+		Anim.Elapsed += DeltaTime;
+		float Alpha = FMath::Clamp(Anim.Elapsed / Anim.Duration, 0.0f, 1.0f);
+		// Ease-out curve for smooth appearance
+		float EasedAlpha = FMath::InterpEaseOut(0.0f, 1.0f, Alpha, 2.0f);
+
+		if (Anim.Index >= 0 && Anim.Index < ProxyPrimitives.Num() && ProxyPrimitives[Anim.Index])
+		{
+			FVector CurrentScale = Anim.TargetScale * EasedAlpha;
+			ProxyPrimitives[Anim.Index]->SetRelativeScale3D(CurrentScale);
+		}
+
+		if (Alpha >= 1.0f)
+		{
+			ProxyScaleAnims.RemoveAt(i);
+		}
+	}
+
+	// ── Live Proxy: Solidification animation ──
+	if (bSolidifyActive)
+	{
+		SolidifyElapsed += DeltaTime;
+		float T = FMath::Clamp(SolidifyElapsed / SolidifyDuration, 0.0f, 1.0f);
+
+		// Lerp opacity from 0.4 to 1.0 across all proxy primitives
+		float CurrentOpacity = FMath::Lerp(0.4f, 1.0f, T);
+		// Emissive flash: peak at T=0.3, then fade
+		float EmissiveMultiplier = (T < 0.3f)
+			? FMath::Lerp(1.0f, 4.0f, T / 0.3f)
+			: FMath::Lerp(4.0f, 0.5f, (T - 0.3f) / 0.7f);
+
+		for (UStaticMeshComponent* Comp : ProxyPrimitives)
+		{
+			if (!Comp) continue;
+			UMaterialInstanceDynamic* DynMat = Cast<UMaterialInstanceDynamic>(Comp->GetMaterial(0));
+			if (DynMat)
+			{
+				DynMat->SetScalarParameterValue(TEXT("Opacity"), CurrentOpacity);
+				FLinearColor EmissiveColor = FLinearColor(0.3f, 0.2f, 0.05f) * EmissiveMultiplier;
+				DynMat->SetVectorParameterValue(TEXT("EmissiveColor"), EmissiveColor);
+			}
+		}
+
+		if (T >= 1.0f)
+		{
+			bSolidifyActive = false;
+		}
+	}
+
 	// Slow turntable rotation for displayed model
 	if (bModelDisplayed && DisplayModelMesh && DisplayModelMesh->IsVisible())
 	{
@@ -600,6 +807,61 @@ void ATartariaForgeBuilding::StartConstruction()
 	ConstructionProgress = 0.0f;
 	ConstructionTimer = 0.0f;
 	BuildingMesh->SetRelativeScale3D(FVector(1.0f, 1.0f, 0.1f));
+}
+
+// -------------------------------------------------------
+// Materialization Burst VFX
+// -------------------------------------------------------
+
+void ATartariaForgeBuilding::PlayMaterializationBurst()
+{
+	if (BuildingType != ETartariaBuildingType::Forge) return;
+
+	UE_LOG(LogTemp, Log, TEXT("Forge '%s': Playing materialization burst VFX"), *BuildingName);
+
+	bMaterializationBurstActive = true;
+	BurstElapsed = 0.0f;
+
+	// Save original pedestal scale for restoration
+	if (PedestalMesh)
+	{
+		OriginalPedestalScale = PedestalMesh->GetRelativeScale3D();
+	}
+
+	// Immediate: flash building light to bright gold
+	if (BuildingLight)
+	{
+		BuildingLight->SetIntensity(BaseForgeIntensity * 5.0f);
+		BuildingLight->SetLightColor(FLinearColor(1.0f, 0.9f, 0.4f)); // Bright gold
+	}
+
+	// Activate completion burst light (golden upward sparks)
+	if (CompletionBurstLight)
+	{
+		CompletionBurstLight->SetIntensity(25000.f);
+	}
+
+	// Flash all window materials to maximum emissive
+	for (int32 i = 0; i < WindowMaterials.Num(); ++i)
+	{
+		if (WindowMaterials[i])
+		{
+			WindowMaterials[i]->SetScalarParameterValue(TEXT("Emissive"), 15.0f);
+			WindowMaterials[i]->SetVectorParameterValue(TEXT("Color"),
+				FLinearColor(1.0f, 0.85f, 0.3f)); // Gold
+		}
+	}
+
+	// Chimney flicker burst
+	if (ChimneyFlickerLight)
+	{
+		ChimneyFlickerLight->SetIntensity(15000.f);
+	}
+
+	// Spawn reward VFX at building location for additional particle flair
+	ATartariaRewardVFX::SpawnRewardVFX(
+		this, GetActorLocation() + FVector(0.f, 0.f, 300.f),
+		ERewardVFXType::Materialization, 2.5f);
 }
 
 void ATartariaForgeBuilding::OnInteract_Implementation(APlayerController* Interactor)
@@ -780,4 +1042,395 @@ void ATartariaForgeBuilding::OnDisplayModelLoaded(bool bSuccess, const FString& 
 	if (MeshLoader)
 		MeshLoader->OnMeshLoaded.RemoveDynamic(
 			this, &ATartariaForgeBuilding::OnDisplayModelLoaded);
+}
+
+// -------------------------------------------------------
+// Forge Queue Counter — Poll + Visuals
+// -------------------------------------------------------
+
+void ATartariaForgeBuilding::PollQueueStatus()
+{
+	UHJGameInstance* GI = UHJGameInstance::Get(this);
+	if (!GI || !GI->ApiClient) return;
+
+	TWeakObjectPtr<ATartariaForgeBuilding> WeakThis(this);
+
+	FOnApiResponse CB;
+	CB.BindLambda([WeakThis](bool bOk, const FString& RespBody)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, bOk, RespBody]()
+		{
+			ATartariaForgeBuilding* Self = WeakThis.Get();
+			if (!Self) return;
+
+			if (!bOk) return;
+
+			TSharedPtr<FJsonObject> Json;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(RespBody);
+			if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
+				return;
+
+			Self->QueueCompletedToday = Json->GetIntegerField(TEXT("completed_today"));
+			Self->QueueTotalJobs = Json->GetIntegerField(TEXT("total_jobs"));
+
+			const TSharedPtr<FJsonObject>* ActiveJobObj = nullptr;
+			if (Json->TryGetObjectField(TEXT("active_job"), ActiveJobObj) && ActiveJobObj && ActiveJobObj->IsValid())
+			{
+				Self->bQueueHasActiveJob = true;
+				Self->QueueProgressPct = (*ActiveJobObj)->GetIntegerField(TEXT("progress_pct"));
+				Self->QueueActiveStageName = (*ActiveJobObj)->GetStringField(TEXT("stage"));
+			}
+			else
+			{
+				Self->bQueueHasActiveJob = false;
+				Self->QueueProgressPct = 0;
+				Self->QueueActiveStageName = TEXT("");
+			}
+
+			Self->ApplyQueueVisuals();
+		});
+	});
+
+	GI->ApiClient->Get(TEXT("/api/engineering/queue-status"), CB);
+}
+
+void ATartariaForgeBuilding::ApplyQueueVisuals()
+{
+	// ── ChimneyLight: intensity proportional to progress_pct ──
+	if (ChimneyLight)
+	{
+		if (bQueueHasActiveJob)
+		{
+			// Map 0-100 progress to 500-5000 intensity
+			float Intensity = 500.f + (QueueProgressPct / 100.f) * 4500.f;
+			ChimneyLight->SetIntensity(Intensity);
+			ChimneyLight->SetLightColor(FLinearColor(1.0f, 0.6f, 0.1f)); // Warm orange
+		}
+		else
+		{
+			ChimneyLight->SetIntensity(500.f);
+			ChimneyLight->SetLightColor(FLinearColor(0.4f, 0.4f, 0.4f)); // Dim grey
+		}
+	}
+
+	// ── ProgressText: floating label ──
+	if (ProgressText)
+	{
+		if (bQueueHasActiveJob)
+		{
+			FString Label = FString::Printf(TEXT("%d/%d -- %s %d%%"),
+				QueueCompletedToday, QueueTotalJobs,
+				*QueueActiveStageName, QueueProgressPct);
+			ProgressText->SetText(FText::FromString(Label));
+			ProgressText->SetTextRenderColor(FColor(201, 168, 76)); // Gold
+		}
+		else
+		{
+			ProgressText->SetText(FText::FromString(TEXT("Forge Idle")));
+			ProgressText->SetTextRenderColor(FColor(136, 136, 136)); // Grey
+		}
+	}
+}
+
+// -------------------------------------------------------
+// Live-Thinking Proxy Geometry
+// -------------------------------------------------------
+
+void ATartariaForgeBuilding::PollLiveProxy()
+{
+	if (BuildingType != ETartariaBuildingType::Forge) return;
+
+	UHJGameInstance* GI = UHJGameInstance::Get(this);
+	if (!GI || !GI->ApiClient) return;
+
+	TWeakObjectPtr<ATartariaForgeBuilding> WeakThis(this);
+
+	FOnApiResponse CB;
+	CB.BindLambda([WeakThis](bool bOk, const FString& RespBody)
+	{
+		AsyncTask(ENamedThreads::GameThread, [WeakThis, bOk, RespBody]()
+		{
+			ATartariaForgeBuilding* Self = WeakThis.Get();
+			if (!Self) return;
+
+			if (!bOk) return;
+
+			TSharedPtr<FJsonObject> Json;
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(RespBody);
+			if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
+				return;
+
+			FString Phase;
+			Json->TryGetStringField(TEXT("phase"), Phase);
+
+			// Only process during active generation phases
+			if (Phase == TEXT("idle") || Phase == TEXT("error"))
+			{
+				if (Self->bProxyActive && Phase == TEXT("idle"))
+				{
+					// Generation ended — the Tick job-completion detector will handle solidify
+				}
+				return;
+			}
+
+			// Parse the primitives field — it's a JSON string containing an array
+			FString PrimitivesStr;
+			Json->TryGetStringField(TEXT("primitives"), PrimitivesStr);
+
+			if (PrimitivesStr.IsEmpty() || PrimitivesStr == TEXT("[]"))
+				return;
+
+			// Parse the inner JSON array of primitives
+			TArray<TSharedPtr<FJsonValue>> PrimArray;
+			TSharedRef<TJsonReader<>> PrimReader = TJsonReaderFactory<>::Create(PrimitivesStr);
+			if (!FJsonSerializer::Deserialize(PrimReader, PrimArray))
+				return;
+
+			int32 IncomingCount = PrimArray.Num();
+			int32 CurrentCount = Self->ProxyPrimitives.Num();
+
+			if (IncomingCount <= 0) return;
+
+			Self->bProxyActive = true;
+
+			// Create the proxy material if we haven't yet
+			if (!Self->ProxyMaterial)
+			{
+				// Load the engine default material as base
+				UMaterialInterface* BaseMat = LoadObject<UMaterialInterface>(
+					nullptr, TEXT("/Engine/EngineMaterials/DefaultMaterial"));
+				if (BaseMat)
+				{
+					Self->ProxyMaterial = UMaterialInstanceDynamic::Create(BaseMat, Self);
+					if (Self->ProxyMaterial)
+					{
+						// Golden translucent appearance
+						Self->ProxyMaterial->SetVectorParameterValue(
+							TEXT("Color"), FLinearColor(0.9f, 0.75f, 0.2f));
+						Self->ProxyMaterial->SetScalarParameterValue(TEXT("Opacity"), 0.4f);
+						Self->ProxyMaterial->SetVectorParameterValue(
+							TEXT("EmissiveColor"), FLinearColor(0.3f, 0.2f, 0.05f));
+					}
+				}
+			}
+
+			// Only spawn NEW primitives (those beyond our current count)
+			for (int32 i = CurrentCount; i < IncomingCount; ++i)
+			{
+				const TSharedPtr<FJsonObject>* PrimObj = nullptr;
+				if (!PrimArray[i]->TryGetObject(PrimObj) || !PrimObj || !(*PrimObj).IsValid())
+					continue;
+
+				FString Geometry;
+				(*PrimObj)->TryGetStringField(TEXT("geometry"), Geometry);
+
+				// Get params sub-object
+				const TSharedPtr<FJsonObject>* ParamsObj = nullptr;
+				if (!(*PrimObj)->TryGetObjectField(TEXT("params"), ParamsObj) || !ParamsObj)
+					continue;
+
+				// Determine type and scale from params
+				FString PrimType;
+				FVector PrimScale = FVector(1.0f);
+
+				if (Geometry == TEXT("box"))
+				{
+					PrimType = TEXT("box");
+					float Width = (*ParamsObj)->GetNumberField(TEXT("width"));
+					float Height = (*ParamsObj)->GetNumberField(TEXT("height"));
+					float Depth = (*ParamsObj)->GetNumberField(TEXT("depth"));
+					// Primitives are in mm — convert to cm and scale relative to unit cube (100 UU)
+					PrimScale = FVector(
+						Width * 0.1f / 100.0f,
+						Depth * 0.1f / 100.0f,
+						Height * 0.1f / 100.0f
+					);
+				}
+				else if (Geometry == TEXT("cylinder") || Geometry == TEXT("cylinder_subtract"))
+				{
+					PrimType = TEXT("cylinder");
+					float Radius = (*ParamsObj)->GetNumberField(TEXT("radius"));
+					float CylHeight = 10.0f;
+					(*ParamsObj)->TryGetNumberField(TEXT("height"), CylHeight);
+					if (!(*ParamsObj)->HasField(TEXT("height")))
+					{
+						// cylinder_subtract uses "depth" instead of "height"
+						(*ParamsObj)->TryGetNumberField(TEXT("depth"), CylHeight);
+					}
+					float DiameterCm = Radius * 2.0f * 0.1f;
+					float HeightCm = CylHeight * 0.1f;
+					PrimScale = FVector(
+						DiameterCm / 100.0f,
+						DiameterCm / 100.0f,
+						HeightCm / 100.0f
+					);
+				}
+				else if (Geometry == TEXT("sphere"))
+				{
+					PrimType = TEXT("sphere");
+					float Radius = (*ParamsObj)->GetNumberField(TEXT("radius"));
+					float DiameterCm = Radius * 2.0f * 0.1f;
+					PrimScale = FVector(DiameterCm / 100.0f);
+				}
+				else
+				{
+					// Unknown geometry type — skip
+					continue;
+				}
+
+				// Position: stack vertically above pedestal, offset per primitive index
+				// Each primitive offsets upward so they don't all overlap
+				float VerticalOffset = (float)i * 15.0f; // 15 cm per primitive
+				FVector Location = FVector(0.0f, 0.0f, VerticalOffset);
+
+				Self->AddProxyPrimitive(PrimType, Location, PrimScale, FRotator::ZeroRotator);
+			}
+		});
+	});
+
+	GI->ApiClient->Get(TEXT("/api/live-proxy/status"), CB);
+}
+
+void ATartariaForgeBuilding::AddProxyPrimitive(const FString& Type, FVector Location,
+                                                FVector Scale, FRotator Rotation)
+{
+	// Determine which Engine basic shape to use
+	const TCHAR* ShapePath = nullptr;
+	if (Type == TEXT("box"))
+	{
+		ShapePath = TEXT("/Engine/BasicShapes/Cube");
+	}
+	else if (Type == TEXT("cylinder"))
+	{
+		ShapePath = TEXT("/Engine/BasicShapes/Cylinder");
+	}
+	else if (Type == TEXT("sphere"))
+	{
+		ShapePath = TEXT("/Engine/BasicShapes/Sphere");
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("Forge '%s': Unknown proxy primitive type '%s'"), *BuildingName, *Type);
+		return;
+	}
+
+	// Load the shape mesh
+	UStaticMesh* ShapeMesh = LoadObject<UStaticMesh>(nullptr, ShapePath);
+	if (!ShapeMesh)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("Forge '%s': Failed to load shape mesh '%s'"), *BuildingName, ShapePath);
+		return;
+	}
+
+	// Create a unique name for this component
+	FName CompName = *FString::Printf(TEXT("ProxyPrim_%d"), ProxyPrimitives.Num());
+	UStaticMeshComponent* NewComp = NewObject<UStaticMeshComponent>(this, CompName);
+	if (!NewComp) return;
+
+	// Attach to the pedestal so proxy geometry appears on the display platform
+	if (PedestalMesh)
+	{
+		NewComp->SetupAttachment(PedestalMesh);
+	}
+	else
+	{
+		NewComp->SetupAttachment(RootComponent);
+	}
+	NewComp->RegisterComponent();
+
+	NewComp->SetStaticMesh(ShapeMesh);
+	NewComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	// Position relative to the pedestal top
+	// Pedestal top is at approximately Z=40 (from DisplayModelMesh offset)
+	FVector PedestalTopOffset = FVector(0.0f, 0.0f, 40.0f);
+	NewComp->SetRelativeLocation(PedestalTopOffset + Location);
+	NewComp->SetRelativeRotation(Rotation);
+
+	// Start at zero scale — will animate up
+	NewComp->SetRelativeScale3D(FVector::ZeroVector);
+
+	// Apply the translucent golden proxy material
+	if (ProxyMaterial)
+	{
+		NewComp->SetMaterial(0, ProxyMaterial);
+	}
+	else
+	{
+		// Fallback: create a per-component dynamic material
+		UMaterialInstanceDynamic* DynMat = NewComp->CreateAndSetMaterialInstanceDynamic(0);
+		if (DynMat)
+		{
+			DynMat->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.9f, 0.75f, 0.2f));
+			DynMat->SetScalarParameterValue(TEXT("Opacity"), 0.4f);
+			DynMat->SetVectorParameterValue(TEXT("EmissiveColor"), FLinearColor(0.3f, 0.2f, 0.05f));
+		}
+	}
+
+	int32 NewIndex = ProxyPrimitives.Num();
+	ProxyPrimitives.Add(NewComp);
+
+	// Queue scale-up animation: 0 -> target over 0.3 seconds
+	FProxyScaleAnim Anim;
+	Anim.Index = NewIndex;
+	Anim.TargetScale = Scale;
+	Anim.Elapsed = 0.0f;
+	Anim.Duration = 0.3f;
+	ProxyScaleAnims.Add(Anim);
+
+	UE_LOG(LogTemp, Verbose,
+		TEXT("Forge '%s': Added proxy primitive %d (%s) scale=(%s)"),
+		*BuildingName, NewIndex, *Type, *Scale.ToString());
+}
+
+void ATartariaForgeBuilding::ClearProxyGeometry()
+{
+	for (UStaticMeshComponent* Comp : ProxyPrimitives)
+	{
+		if (Comp)
+		{
+			Comp->DestroyComponent();
+		}
+	}
+	ProxyPrimitives.Empty();
+	ProxyScaleAnims.Empty();
+	bProxyActive = false;
+	bSolidifyActive = false;
+	SolidifyElapsed = 0.0f;
+
+	UE_LOG(LogTemp, Log, TEXT("Forge '%s': Proxy geometry cleared"), *BuildingName);
+}
+
+void ATartariaForgeBuilding::SolidifyProxy()
+{
+	if (ProxyPrimitives.Num() == 0)
+	{
+		bProxyActive = false;
+		return;
+	}
+
+	UE_LOG(LogTemp, Log,
+		TEXT("Forge '%s': Solidifying %d proxy primitives"),
+		*BuildingName, ProxyPrimitives.Num());
+
+	bSolidifyActive = true;
+	SolidifyElapsed = 0.0f;
+
+	// Each proxy primitive gets its own dynamic material instance for independent lerping
+	for (UStaticMeshComponent* Comp : ProxyPrimitives)
+	{
+		if (!Comp) continue;
+
+		// Ensure each component has its own dynamic material (not shared ProxyMaterial)
+		UMaterialInstanceDynamic* DynMat = Comp->CreateAndSetMaterialInstanceDynamic(0);
+		if (DynMat)
+		{
+			// Start from current translucent gold state
+			DynMat->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.9f, 0.75f, 0.2f));
+			DynMat->SetScalarParameterValue(TEXT("Opacity"), 0.4f);
+			DynMat->SetVectorParameterValue(TEXT("EmissiveColor"), FLinearColor(0.3f, 0.2f, 0.05f));
+		}
+	}
 }

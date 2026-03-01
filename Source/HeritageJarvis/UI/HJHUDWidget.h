@@ -117,6 +117,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
     void SetQueueCount(int32 Count);
 
+    /** Forge Queue Counter: update forge status text in HUD top bar */
+    UFUNCTION(BlueprintCallable, Category = "HJ|HUD")
+    void SetForgeStatus(int32 CompletedToday, int32 TotalJobs, int32 ProgressPct, bool bHasActiveJob);
+
     // -------------------------------------------------------
     // Phase 2+3: Navigation UI + Combat Feedback
     // -------------------------------------------------------
@@ -270,6 +274,10 @@ private:
     FTartariaFleetSummary CachedFleet;
     FTartariaTechSummary CachedTech;
     FTartariaMiningSummary CachedMining;
+
+    // Forge Queue Counter (top area)
+    UPROPERTY()
+    UTextBlock* ForgeStatusText = nullptr;
 
     // Last-saved indicator (Save/Load UX)
     UPROPERTY()
